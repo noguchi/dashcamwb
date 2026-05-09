@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>dcwb verify — {{ event_name }}</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #111; color: #eee; margin: 0; padding: 1rem; }
+    h1 { font-size: 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 0.5rem; border-bottom: 1px solid #333; vertical-align: top; }
+    img { max-width: 100%; height: auto; display: block; }
+    .meta { font-size: 0.8rem; color: #999; }
+  </style>
+</head>
+<body>
+  <h1>dcwb verify — {{ event_name }}</h1>
+  <table>
+    <thead>
+      <tr><th>camera</th><th>before</th><th>A only</th><th>A + B (full)</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.camera }}<br><span class="meta">scene_gain: {{ row.scene_gain }}</span></td>
+        <td><img src="data:image/png;base64,{{ row.before }}"></td>
+        <td><img src="data:image/png;base64,{{ row.a_only }}"></td>
+        <td><img src="data:image/png;base64,{{ row.full }}"></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>
