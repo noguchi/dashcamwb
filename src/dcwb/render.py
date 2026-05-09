@@ -49,6 +49,8 @@ def _camera_of(clip: Path) -> str:
             return cam
     raise ValueError(f"could not infer camera from filename: {clip.name}")
 
+_EOF_GUARD_SEC = 0.3  # 末尾フレーム付近は OpenCV の seek が EOF を超える事があるので余裕
+
 def estimate_scene_gain(
     clip: Path,
     profile: Profile,
@@ -58,16 +60,33 @@ def estimate_scene_gain(
     p: int,
 ) -> tuple[float, float, float]:
     duration = probe_duration(clip)
-    ts_list = [duration * (i + 0.5) / samples_per_clip for i in range(samples_per_clip)]
+    # サンプル区間を [EOF_GUARD, duration - EOF_GUARD] に制限。
+    # 短いクリップ (≤ 1s) は中央1点のみで推定する。
+    usable = max(0.0, duration - 2 * _EOF_GUARD_SEC)
+    if usable <= 0.0 or samples_per_clip <= 1:
+        ts_list = [duration / 2.0]
+    else:
+        ts_list = [
+            _EOF_GUARD_SEC + usable * (i + 0.5) / samples_per_clip
+            for i in range(samples_per_clip)
+        ]
     gains: list[tuple[float, float, float]] = []
     for t in ts_list:
-        img_rgb = extract_frame(clip, t)
+        try:
+            img_rgb = extract_frame(clip, t)
+        except RuntimeError:
+            # 個別フレーム抽出失敗 (EOF 跨ぎ等) はそのサンプルをスキップ
+            continue
         # Apply A (profile) before estimating B
         flat = img_rgb.reshape(-1, 3).astype(np.float64) / 255.0
         flat = flat @ profile.matrix_3x3.T
         np.clip(flat, 0.0, 1.0, out=flat)
         img_a = (flat.reshape(img_rgb.shape) * 255.0).astype(np.uint8)
         gains.append(shades_of_gray(img_a, p=p, sat_high=sat_high, sat_low=sat_low))
+    if not gains:
+        # 全サンプル失敗 → B レイヤー無効化を上位 (compose_clip_matrix の fallback) に委ねる
+        # ためにレンジ外のゲインを返す
+        return 999.0, 1.0, 999.0
     g = np.array(gains).mean(axis=0)
     return float(g[0]), float(g[1]), float(g[2])
 

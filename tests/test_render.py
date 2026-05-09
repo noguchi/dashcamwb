@@ -126,6 +126,32 @@ def test_render_event_neutralises_known_cast(tmp_path):
     assert (out_event_dir / "event.json").exists()
     assert (out_event_dir / "_pipeline.json").exists()
 
+def test_estimate_scene_gain_handles_short_clip(tmp_path):
+    """Real Tesla DashCam events end with a short trailing segment (~5s).
+
+    With samples_per_clip=10 the last sampled timestamp lands close to EOF
+    where OpenCV's seek can return no frame. estimate_scene_gain must
+    sample with a small EOF guard and skip per-frame failures rather than
+    raise.
+    """
+    from tests.fixtures.make_synthetic import make_clip
+    from dcwb.render import estimate_scene_gain
+    short = tmp_path / "short.mp4"
+    make_clip(short, cast_rgb=(1.0, 1.0, 1.0), duration_sec=1.5)
+    profile = Profile.from_white_point(
+        "front", np.array([200.0, 200.0, 200.0]),
+        CalibrationMeta(samples_used=10, events_sampled=2, method="t",
+                        calibrated_at=datetime.now(timezone.utc),
+                        samples_per_event_max=3),
+    )
+    g_r, g_g, g_b = estimate_scene_gain(
+        short, profile, samples_per_clip=10,
+        sat_high=0.97, sat_low=0.03, p=6,
+    )
+    assert g_g == 1.0
+    assert 0.9 < g_r < 1.1
+    assert 0.9 < g_b < 1.1
+
 def test_render_event_resilient_to_corrupted_clip(tmp_path):
     """spec §7.4: a single corrupted clip must not abort the whole event.
 
