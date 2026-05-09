@@ -140,7 +140,7 @@ Tesla Model 3 Highland の DashCam 映像（front / back / left_pillar / right_p
 
 - Gray World (p=1) より単色シーン耐性が高い
 - White Patch (p=∞) より飽和ピクセル耐性が高い
-- 推定式: `e_c = (∫ |f_c|^p)^(1/p) for c in {R,G,B}`、ゲイン: `g_c = max(e) / e_c`
+- 推定式: `e_c = (∫ |f_c|^p)^(1/p) for c in {R,G,B}`、ゲイン: `g_c = e_g / e_c`（緑チャネル基準で `g_g ≡ 1`）。`compose_clip_matrix` の `gain_min`/`gain_max` を 1 周りに対称配置するためにこの正規化を採用。
 
 ### 4.2 手順（クリップごと）
 1. クリップ全長から等間隔に **10 フレーム**を `ffmpeg -ss <t> -frames:v 1` で抽出
