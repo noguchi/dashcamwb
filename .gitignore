@@ -1,0 +1,24 @@
+# Tesla DashCam sample data (not source-controlled)
+2026-*/
+
+# Pipeline outputs
+corrected/
+logs/
+calibration_report.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
