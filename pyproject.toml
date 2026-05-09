@@ -1,0 +1,31 @@
+[project]
+name = "dcwb"
+version = "0.1.0"
+description = "Tesla DashCam White Balance correction pipeline"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python>=4.9",
+  "astral>=3.2",
+  "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-mock>=3.12",
+]
+
+[project.scripts]
+dcwb = "dcwb.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

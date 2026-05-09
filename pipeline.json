@@ -1,0 +1,12 @@
+{
+  "awb": {
+    "method": "shades_of_gray",
+    "minkowski_p": 6,
+    "samples_per_clip": 10,
+    "saturation_high": 0.97,
+    "saturation_low": 0.03,
+    "gain_min": 0.7,
+    "gain_max": 1.5,
+    "night_attenuation": 0.5
+  }
+}
