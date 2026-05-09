@@ -58,7 +58,7 @@ def make_event(
         out = event_dir / f"{timestamp}-{cam}.mp4"
         make_clip(out, casts[cam])
     # 注: Tesla 実車の event.json は timezone なし naive ISO format。
-    # calibrate.py の `_read_event_timestamp` で JST として解釈する前提。
+    # calibrate.py の `read_event_timestamp` で JST として解釈する前提。
     (event_dir / "event.json").write_text(
         '{"timestamp":"2026-05-05T13:49:56","city":"Tokyo",'
         '"street":"","est_lat":"35.68","est_lon":"139.65",'

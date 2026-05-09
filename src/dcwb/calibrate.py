@@ -81,7 +81,7 @@ def _list_clips_for_camera(source_root: Path, camera: str) -> list[Path]:
 def _event_dir_of(clip: Path) -> Path:
     return clip.parent
 
-def _read_event_timestamp(event_dir: Path) -> datetime | None:
+def read_event_timestamp(event_dir: Path) -> datetime | None:
     """Read event.json["timestamp"]. Naive timestamps are interpreted as JST."""
     ev = event_dir / "event.json"
     if not ev.exists():
@@ -95,7 +95,7 @@ def _read_event_timestamp(event_dir: Path) -> datetime | None:
     except Exception:
         return None
 
-def _read_event_latlon(event_dir: Path) -> tuple[float, float]:
+def read_event_latlon(event_dir: Path) -> tuple[float, float]:
     ev = event_dir / "event.json"
     if not ev.exists():
         return TOKYO_LAT, TOKYO_LON
@@ -116,8 +116,8 @@ def calibrate_camera(
     events_seen: set[Path] = set()
     for clip in clips:
         ev_dir = _event_dir_of(clip)
-        ts = _read_event_timestamp(ev_dir)
-        lat, lon = _read_event_latlon(ev_dir)
+        ts = read_event_timestamp(ev_dir)
+        lat, lon = read_event_latlon(ev_dir)
         if ts is not None and not is_daytime(ts, lat=lat, lon=lon):
             continue
         try:

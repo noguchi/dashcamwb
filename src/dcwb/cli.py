@@ -33,6 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pv.add_argument("event_dir", type=Path)
     pv.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR)
     pv.add_argument("--out-html", type=Path, default=Path("verify.html"))
+    pv.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
 
     pa = sub.add_parser("render-all", help="Render every event in a source directory")
     pa.add_argument("--source", type=Path, required=True,
@@ -75,10 +76,14 @@ def _cmd_render(args) -> int:
     return 0
 
 def _cmd_verify(args) -> int:
+    pipeline_cfg = None
+    if args.pipeline_config is not None and args.pipeline_config.exists():
+        pipeline_cfg = json.loads(args.pipeline_config.read_text())
     generate_verify_report(
         event_dir=args.event_dir,
         profiles_dir=args.profiles_dir,
         out_html=args.out_html,
+        pipeline_cfg=pipeline_cfg,
     )
     print(f"[verify] wrote {args.out_html}", file=sys.stderr)
     return 0

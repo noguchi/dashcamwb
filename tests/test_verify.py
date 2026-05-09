@@ -35,6 +35,11 @@ def test_generate_verify_report_creates_html(tmp_path):
         profiles_dir=profiles_dir,
         out_html=out,
         encoder="libx264",
+        pipeline_cfg={"awb": {
+            "samples_per_clip": 3, "minkowski_p": 6,
+            "saturation_high": 0.97, "saturation_low": 0.03,
+            "gain_min": 0.7, "gain_max": 1.5, "night_attenuation": 0.5,
+        }},
     )
     assert out.exists()
     html = out.read_text()

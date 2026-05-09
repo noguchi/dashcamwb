@@ -9,9 +9,23 @@ from dcwb.profile import Profile
 from dcwb.matrix import from_diag
 from dcwb.ffmpeg_wrap import probe_duration, extract_frame
 from dcwb.awb import shades_of_gray
-from dcwb.render import compose_clip_matrix, _camera_of, CAMERAS
+from dcwb.render import compose_clip_matrix, _camera_of, CAMERAS, estimate_scene_gain
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Defaults mirror project's pipeline.json so callers can omit pipeline_cfg.
+_DEFAULT_PIPELINE_CFG: dict = {
+    "awb": {
+        "method": "shades_of_gray",
+        "minkowski_p": 6,
+        "samples_per_clip": 10,
+        "saturation_high": 0.97,
+        "saturation_low": 0.03,
+        "gain_min": 0.7,
+        "gain_max": 1.5,
+        "night_attenuation": 0.5,
+    }
+}
 
 def _to_base64_png(img_rgb: np.ndarray) -> str:
     bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
@@ -31,7 +45,10 @@ def generate_verify_report(
     profiles_dir: Path,
     out_html: Path,
     encoder: str = "h264_videotoolbox",
+    pipeline_cfg: dict | None = None,
 ) -> None:
+    cfg = pipeline_cfg if pipeline_cfg is not None else _DEFAULT_PIPELINE_CFG
+    awb_cfg = cfg["awb"]
     profiles = {
         cam: Profile.from_json(profiles_dir / f"{cam}.json")
         for cam in CAMERAS
@@ -40,13 +57,23 @@ def generate_verify_report(
     for clip in sorted(event_dir.glob("*.mp4")):
         cam = _camera_of(clip)
         prof = profiles[cam]
-        # 1 フレームを中央時刻から
+        # 1 フレームを中央時刻から (表示用)
         duration = probe_duration(clip)
         before = extract_frame(clip, duration / 2.0)
         a_only = _apply_matrix(before, prof.matrix_3x3)
-        # B を 1 サンプルで簡易計算
-        scene_gain = shades_of_gray(a_only, p=6)
-        final_m = compose_clip_matrix(prof, scene_gain)
+        # B は render と同じ N-フレーム平均で推定 (pipeline_cfg 由来)
+        scene_gain = estimate_scene_gain(
+            clip, prof,
+            samples_per_clip=int(awb_cfg["samples_per_clip"]),
+            sat_high=float(awb_cfg["saturation_high"]),
+            sat_low=float(awb_cfg["saturation_low"]),
+            p=int(awb_cfg["minkowski_p"]),
+        )
+        final_m = compose_clip_matrix(
+            prof, scene_gain,
+            gain_min=float(awb_cfg["gain_min"]),
+            gain_max=float(awb_cfg["gain_max"]),
+        )
         full = _apply_matrix(before, final_m)
         rows.append({
             "camera": cam,

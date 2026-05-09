@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -9,6 +10,8 @@ from dcwb.profile import Profile
 from dcwb.matrix import from_diag, compose, Matrix3x3
 from dcwb.awb import shades_of_gray
 from dcwb.ffmpeg_wrap import probe_duration, extract_frame, render_with_matrix
+from dcwb.calibrate import read_event_timestamp, read_event_latlon
+from dcwb.daylight import is_daytime
 
 CAMERAS = (
     "front", "back",
@@ -46,7 +49,7 @@ def _camera_of(clip: Path) -> str:
             return cam
     raise ValueError(f"could not infer camera from filename: {clip.name}")
 
-def _estimate_scene_gain(
+def estimate_scene_gain(
     clip: Path,
     profile: Profile,
     samples_per_clip: int,
@@ -86,51 +89,83 @@ def render_event(
         for cam in CAMERAS
     }
 
-    snapshot: dict = {"event": event_dir.name, "clips": []}
+    # Event-level night attenuation: pull from event.json timestamp + lat/lon.
+    ts = read_event_timestamp(event_dir)
+    lat, lon = read_event_latlon(event_dir)
+    if ts is None:
+        attenuation = 1.0
+    else:
+        attenuation = 1.0 if is_daytime(ts, lat=lat, lon=lon) else float(awb_cfg["night_attenuation"])
+
+    snapshot: dict = {
+        "event": event_dir.name,
+        "attenuation": attenuation,
+        "clips": [],
+    }
 
     for clip in sorted(event_dir.glob("*.mp4")):
-        cam = _camera_of(clip)
-        prof = profiles[cam]
-        scene_gain = _estimate_scene_gain(
-            clip, prof,
-            samples_per_clip=int(awb_cfg["samples_per_clip"]),
-            sat_high=float(awb_cfg["saturation_high"]),
-            sat_low=float(awb_cfg["saturation_low"]),
-            p=int(awb_cfg["minkowski_p"]),
-        )
-        final_matrix = compose_clip_matrix(
-            prof, scene_gain,
-            gain_min=float(awb_cfg["gain_min"]),
-            gain_max=float(awb_cfg["gain_max"]),
-        )
-        render_with_matrix(
-            clip, out_dir / clip.name, final_matrix,
-            bitrate_kbps=bitrate_kbps, encoder=encoder,
-        )
-        snapshot["clips"].append({
-            "clip": clip.name, "camera": cam,
-            "scene_gain": list(scene_gain),
-            "final_matrix": final_matrix.tolist(),
-        })
+        try:
+            cam = _camera_of(clip)
+            prof = profiles[cam]
+            scene_gain = estimate_scene_gain(
+                clip, prof,
+                samples_per_clip=int(awb_cfg["samples_per_clip"]),
+                sat_high=float(awb_cfg["saturation_high"]),
+                sat_low=float(awb_cfg["saturation_low"]),
+                p=int(awb_cfg["minkowski_p"]),
+            )
+            final_matrix = compose_clip_matrix(
+                prof, scene_gain,
+                gain_min=float(awb_cfg["gain_min"]),
+                gain_max=float(awb_cfg["gain_max"]),
+                attenuation=attenuation,
+            )
+            render_with_matrix(
+                clip, out_dir / clip.name, final_matrix,
+                bitrate_kbps=bitrate_kbps, encoder=encoder,
+            )
+            snapshot["clips"].append({
+                "clip": clip.name, "camera": cam,
+                "scene_gain": list(scene_gain),
+                "final_matrix": final_matrix.tolist(),
+            })
+        except Exception as e:
+            print(f"[render] FAILED {clip.name}: {e}", file=sys.stderr)
+            try:
+                cam_for_err = _camera_of(clip)
+            except Exception:
+                cam_for_err = None
+            snapshot["clips"].append({
+                "clip": clip.name,
+                "camera": cam_for_err,
+                "error": str(e),
+            })
+            continue
 
     # event.json copy
     src_meta = event_dir / "event.json"
     if src_meta.exists():
-        shutil.copy2(src_meta, out_dir / "event.json")
+        try:
+            shutil.copy2(src_meta, out_dir / "event.json")
+        except Exception as e:
+            print(f"[render] FAILED event.json copy: {e}", file=sys.stderr)
 
     # thumb.png: render through the front camera matrix if present
     src_thumb = event_dir / "thumb.png"
     if src_thumb.exists():
-        import cv2
-        img_bgr = cv2.imread(str(src_thumb), cv2.IMREAD_COLOR)
-        if img_bgr is not None:
-            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-            flat = img_rgb.reshape(-1, 3).astype(np.float64) / 255.0
-            corrected = flat @ profiles["front"].matrix_3x3.T
-            np.clip(corrected, 0.0, 1.0, out=corrected)
-            out_rgb = (corrected.reshape(img_rgb.shape) * 255.0).astype(np.uint8)
-            out_bgr = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(str(out_dir / "thumb.png"), out_bgr)
+        try:
+            import cv2
+            img_bgr = cv2.imread(str(src_thumb), cv2.IMREAD_COLOR)
+            if img_bgr is not None:
+                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                flat = img_rgb.reshape(-1, 3).astype(np.float64) / 255.0
+                corrected = flat @ profiles["front"].matrix_3x3.T
+                np.clip(corrected, 0.0, 1.0, out=corrected)
+                out_rgb = (corrected.reshape(img_rgb.shape) * 255.0).astype(np.uint8)
+                out_bgr = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(str(out_dir / "thumb.png"), out_bgr)
+        except Exception as e:
+            print(f"[render] FAILED thumb.png: {e}", file=sys.stderr)
 
     # snapshot
     snapshot["rendered_at"] = datetime.now(timezone.utc).isoformat()

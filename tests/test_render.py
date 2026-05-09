@@ -9,6 +9,26 @@ from dcwb.matrix import from_diag
 from dcwb.ffmpeg_wrap import extract_frame
 from tests.fixtures.make_synthetic import make_event, CAMERAS
 
+def _write_neutral_profiles(profiles_dir: Path) -> None:
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    for cam in CAMERAS:
+        prof = Profile.from_white_point(
+            cam, np.array([200.0, 200.0, 200.0]),
+            CalibrationMeta(
+                samples_used=100, events_sampled=10, method="test",
+                calibrated_at=datetime.now(timezone.utc),
+                samples_per_event_max=3,
+            ),
+        )
+        prof.to_json(profiles_dir / f"{cam}.json")
+
+def _default_pipeline_cfg() -> dict:
+    return {"awb": {
+        "method": "shades_of_gray", "minkowski_p": 6,
+        "samples_per_clip": 3, "saturation_high": 0.97, "saturation_low": 0.03,
+        "gain_min": 0.7, "gain_max": 1.5, "night_attenuation": 0.5,
+    }}
+
 def _mk_profile(camera: str, gain_r=1.0, gain_b=1.0) -> Profile:
     return Profile.from_white_point(
         camera=camera,
@@ -105,3 +125,94 @@ def test_render_event_neutralises_known_cast(tmp_path):
     # event.json と _pipeline.json が出力されている
     assert (out_event_dir / "event.json").exists()
     assert (out_event_dir / "_pipeline.json").exists()
+
+def test_render_event_resilient_to_corrupted_clip(tmp_path):
+    """spec §7.4: a single corrupted clip must not abort the whole event.
+
+    Other 5 cameras render normally; the failed clip is recorded as an error
+    entry in _pipeline.json; event.json + _pipeline.json are written even
+    though one clip blew up.
+    """
+    source_root = tmp_path / "src"
+    event_name = "2026-05-05_13-50-46"
+    event_dir = source_root / "SentryClips" / event_name
+    make_event(event_dir)  # all neutral
+
+    # corrupt the front clip
+    front_clips = sorted(event_dir.glob("*-front.mp4"))
+    assert len(front_clips) == 1
+    corrupt_clip = front_clips[0]
+    corrupt_clip.write_bytes(b"not an mp4")
+
+    profiles_dir = tmp_path / "profiles"
+    _write_neutral_profiles(profiles_dir)
+
+    out_root = tmp_path / "corrected"
+    # must NOT raise
+    render_event(
+        event_dir=event_dir,
+        out_root=out_root,
+        profiles_dir=profiles_dir,
+        pipeline_cfg=_default_pipeline_cfg(),
+        encoder="libx264",
+    )
+    out_event_dir = out_root / event_name
+    # event.json + _pipeline.json written despite failure
+    assert (out_event_dir / "event.json").exists()
+    pj_path = out_event_dir / "_pipeline.json"
+    assert pj_path.exists()
+    snapshot = json.loads(pj_path.read_text())
+    # find the front entry
+    front_entries = [c for c in snapshot["clips"] if c["clip"].endswith("-front.mp4")]
+    assert len(front_entries) == 1
+    assert "error" in front_entries[0]
+    # the corrupted clip must not have been written to output
+    assert not (out_event_dir / corrupt_clip.name).exists()
+    # other 5 cameras' rendered outputs exist
+    for cam in CAMERAS:
+        if cam == "front":
+            continue
+        rendered = sorted(out_event_dir.glob(f"*-{cam}.mp4"))
+        assert len(rendered) == 1, f"expected one rendered clip for {cam}"
+
+def test_render_event_night_attenuation_engaged(tmp_path):
+    """spec §4.3: night/twilight events must apply night_attenuation; daytime gets 1.0.
+
+    We render two synthetic events (one daytime, one night) and read
+    _pipeline.json["attenuation"] from each.
+    """
+    profiles_dir = tmp_path / "profiles"
+    _write_neutral_profiles(profiles_dir)
+    pipeline_cfg = _default_pipeline_cfg()
+    out_root = tmp_path / "corrected"
+
+    # Day event: default event.json from make_event uses 13:49:56 (daytime)
+    day_event_dir = tmp_path / "src_day" / "2026-05-05_day"
+    make_event(day_event_dir)
+    render_event(
+        event_dir=day_event_dir,
+        out_root=out_root,
+        profiles_dir=profiles_dir,
+        pipeline_cfg=pipeline_cfg,
+        encoder="libx264",
+    )
+    day_snap = json.loads((out_root / day_event_dir.name / "_pipeline.json").read_text())
+    assert day_snap["attenuation"] == 1.0
+
+    # Night event: overwrite event.json with a 22:00 timestamp
+    night_event_dir = tmp_path / "src_night" / "2026-05-05_night"
+    make_event(night_event_dir)
+    (night_event_dir / "event.json").write_text(
+        '{"timestamp":"2026-05-05T22:00:00","city":"Tokyo",'
+        '"street":"","est_lat":"35.68","est_lon":"139.65",'
+        '"reason":"sentry_aware_object_detection","camera":"5"}'
+    )
+    render_event(
+        event_dir=night_event_dir,
+        out_root=out_root,
+        profiles_dir=profiles_dir,
+        pipeline_cfg=pipeline_cfg,
+        encoder="libx264",
+    )
+    night_snap = json.loads((out_root / night_event_dir.name / "_pipeline.json").read_text())
+    assert night_snap["attenuation"] == 0.5
