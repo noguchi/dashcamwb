@@ -1,19 +1,13 @@
 from __future__ import annotations
 import base64
-from io import BytesIO
 from pathlib import Path
-import cv2
-import numpy as np
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from dcwb.profile import Profile
-from dcwb.matrix import from_diag
-from dcwb.ffmpeg_wrap import probe_duration, extract_frame
-from dcwb.awb import shades_of_gray
-from dcwb.render import compose_clip_matrix, _camera_of, CAMERAS, estimate_scene_gain
+from dcwb.render import CAMERAS, _camera_of
+from dcwb.serve.preview import compute_frame_triple, to_png_bytes
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# Defaults mirror project's pipeline.json so callers can omit pipeline_cfg.
 _DEFAULT_PIPELINE_CFG: dict = {
     "awb": {
         "method": "shades_of_gray",
@@ -27,18 +21,10 @@ _DEFAULT_PIPELINE_CFG: dict = {
     }
 }
 
-def _to_base64_png(img_rgb: np.ndarray) -> str:
-    bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-    ok, buf = cv2.imencode(".png", bgr)
-    if not ok:
-        raise RuntimeError("png encode failed")
-    return base64.b64encode(buf.tobytes()).decode("ascii")
 
-def _apply_matrix(img_rgb: np.ndarray, matrix: np.ndarray) -> np.ndarray:
-    flat = img_rgb.reshape(-1, 3).astype(np.float64) / 255.0
-    out = flat @ matrix.T
-    np.clip(out, 0.0, 1.0, out=out)
-    return (out.reshape(img_rgb.shape) * 255.0).astype(np.uint8)
+def _b64(img_rgb) -> str:
+    return base64.b64encode(to_png_bytes(img_rgb)).decode("ascii")
+
 
 def generate_verify_report(
     event_dir: Path,
@@ -56,31 +42,13 @@ def generate_verify_report(
     rows = []
     for clip in sorted(event_dir.glob("*.mp4")):
         cam = _camera_of(clip)
-        prof = profiles[cam]
-        # 1 フレームを中央時刻から (表示用)
-        duration = probe_duration(clip)
-        before = extract_frame(clip, duration / 2.0)
-        a_only = _apply_matrix(before, prof.matrix_3x3)
-        # B は render と同じ N-フレーム平均で推定 (pipeline_cfg 由来)
-        scene_gain = estimate_scene_gain(
-            clip, prof,
-            samples_per_clip=int(awb_cfg["samples_per_clip"]),
-            sat_high=float(awb_cfg["saturation_high"]),
-            sat_low=float(awb_cfg["saturation_low"]),
-            p=int(awb_cfg["minkowski_p"]),
-        )
-        final_m = compose_clip_matrix(
-            prof, scene_gain,
-            gain_min=float(awb_cfg["gain_min"]),
-            gain_max=float(awb_cfg["gain_max"]),
-        )
-        full = _apply_matrix(before, final_m)
+        triple = compute_frame_triple(clip, profiles[cam], awb_cfg)
         rows.append({
             "camera": cam,
-            "scene_gain": [round(g, 3) for g in scene_gain],
-            "before": _to_base64_png(before),
-            "a_only": _to_base64_png(a_only),
-            "full": _to_base64_png(full),
+            "scene_gain": [round(g, 3) for g in triple.scene_gain],
+            "before": _b64(triple.before),
+            "a_only": _b64(triple.a_only),
+            "full": _b64(triple.full),
         })
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
