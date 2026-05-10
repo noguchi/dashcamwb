@@ -1,0 +1,23 @@
+{% extends "base.html.j2" %}
+{% block title %}dcwb — sources{% endblock %}
+{% block content %}
+{% if usb_missing %}
+<div class="banner warning">
+  USB ({{ usb_root }}) が見つかりません。マウントして「Reindex」を押してください。
+</div>
+{% endif %}
+<h1>Sources</h1>
+<div class="grid">
+  {% for source, events in sources.items() %}
+  <a class="card" href="{{ url_for('events_view', source=source) }}">
+    <h2>{{ source }}</h2>
+    <p class="count">{{ events|length }} events</p>
+    {% if events %}
+    <p class="span">
+      {{ events[-1].start.strftime('%Y-%m-%d') }} – {{ events[0].start.strftime('%Y-%m-%d') }}
+    </p>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

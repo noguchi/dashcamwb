@@ -1,0 +1,81 @@
+{% extends "base.html.j2" %}
+{% block title %}dcwb — {{ event.name }}{% endblock %}
+{% block content %}
+<h1>{{ event.name }}</h1>
+<p>
+  <a href="{{ url_for('events_view', source=source) }}">← {{ source }}</a>
+  &middot; {{ event.start.strftime('%Y-%m-%d %H:%M') }} – {{ event.end.strftime('%H:%M') }}
+  &middot; {{ event.clips|length }} clips
+</p>
+
+<section class="grid-3x2">
+  {% for cam in ['front','back','left_pillar','right_pillar','left_repeater','right_repeater'] %}
+  <div class="cell">
+    <h3>{{ cam }}</h3>
+    {% set err = preview.errors.get(cam) %}
+    {% if err %}
+    <p class="error">error: {{ err }}</p>
+    {% endif %}
+    <div class="ba">
+      <figure>
+        <img src="{{ url_for('preview_png', source=source, event_name=event.name, cam=cam, kind='before') }}" alt="{{ cam }} before">
+        <figcaption>before</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ url_for('preview_png', source=source, event_name=event.name, cam=cam, kind='after') }}" alt="{{ cam }} after">
+        <figcaption>after</figcaption>
+      </figure>
+    </div>
+    {% set g = preview.scene_gains.get(cam) %}
+    {% if g %}
+    <p class="gain">scene_gain R={{ '%.3f' % g[0] }} G={{ '%.3f' % g[1] }} B={{ '%.3f' % g[2] }}</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+<section class="render">
+  <h2>Render video</h2>
+  {% if rendered %}
+  <p class="badge done">✓ rendered</p>
+  <div class="videos">
+    {% for cam in ['front','back','left_pillar','right_pillar','left_repeater','right_repeater'] %}
+    <div class="video-cell">
+      <h4>{{ cam }}</h4>
+      {% set fname = cam_to_corrected.get(cam) %}
+      {% if fname %}
+      <video controls preload="metadata" src="{{ url_for('corrected_file', source=source, event_name=event.name, filename=fname) }}"></video>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <form action="{{ url_for('render', source=source, event_name=event.name) }}" method="post">
+    <button type="submit">Render video</button>
+  </form>
+  {% endif %}
+  {% if job_id %}
+  <p id="job-status">job {{ job_id }}: <span id="job-state">…</span></p>
+  <script>
+  (function() {
+    const jid = "{{ job_id }}";
+    const el = document.getElementById("job-state");
+    async function poll() {
+      try {
+        const r = await fetch("/jobs/" + jid);
+        if (!r.ok) { el.textContent = "missing"; return; }
+        const j = await r.json();
+        el.textContent = j.status + (j.elapsed_s ? " (" + j.elapsed_s.toFixed(1) + "s)" : "");
+        if (j.status === "done") { setTimeout(() => location.reload(), 500); return; }
+        if (j.status === "failed") { el.textContent = "failed: " + (j.error || ""); return; }
+        setTimeout(poll, 2000);
+      } catch (e) {
+        el.textContent = "error: " + e;
+      }
+    }
+    poll();
+  })();
+  </script>
+  {% endif %}
+</section>
+{% endblock %}

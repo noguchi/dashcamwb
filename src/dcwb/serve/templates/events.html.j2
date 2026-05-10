@@ -1,0 +1,33 @@
+{% extends "base.html.j2" %}
+{% block title %}dcwb — {{ source }}{% endblock %}
+{% block content %}
+<h1>{{ source }}</h1>
+<p><a href="{{ url_for('root') }}">← Sources</a></p>
+{% if not events %}
+<p>No events.</p>
+{% else %}
+<ul class="event-list">
+  {% for ev in events %}
+  <li>
+    <a class="event-link" href="{{ url_for('event_detail', source=source, event_name=ev.name) }}">
+      <span class="thumb">
+        {% if ev.thumb %}
+          <span class="thumb-placeholder">📷</span>
+        {% else %}
+          <span class="thumb-placeholder">⏱</span>
+        {% endif %}
+      </span>
+      <span class="meta">
+        <strong>{{ ev.name }}</strong>
+        <span class="range">{{ ev.start.strftime('%Y-%m-%d %H:%M') }} → {{ ev.end.strftime('%H:%M') }}</span>
+        <span class="clips">{{ ev.clips|length }} clips</span>
+      </span>
+      <span class="badge">
+        {% if ev.name in rendered_names %}✓ rendered{% else %}–{% endif %}
+      </span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
