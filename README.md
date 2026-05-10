@@ -49,6 +49,14 @@ Or batch-render every event in a source directory:
 .venv/bin/dcwb render-all --source /Volumes/sentryusb/SentryClips
 ```
 
+4. **Browse** events and apply WB interactively:
+
+```bash
+.venv/bin/dcwb serve --source /Volumes/sentryusb
+```
+
+Opens at <http://127.0.0.1:8765/>. Lists SentryClips / SavedClips / RecentClips (RecentClips grouped by 10-minute gaps), shows before/after preview frames per camera, and can render full corrected videos to `corrected/<event>/` on demand.
+
 ## Testing
 
 ```bash
