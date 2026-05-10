@@ -61,3 +61,11 @@ def test_cli_render_invokes_render_event(tmp_path, monkeypatch):
     ])
     assert captured["event_dir"] == event_dir
     assert captured["out_root"] == out_root
+
+def test_serve_help_parses(capsys):
+    from dcwb.cli import _build_parser
+    parser = _build_parser()
+    args = parser.parse_args(["serve", "--port", "9000"])
+    assert args.cmd == "serve"
+    assert args.port == 9000
+    assert str(args.source) == "/Volumes/sentryusb"

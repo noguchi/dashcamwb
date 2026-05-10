@@ -43,6 +43,16 @@ def _build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
     pa.add_argument("--encoder", default="h264_videotoolbox")
     pa.add_argument("--bitrate-kbps", type=int, default=12000)
+
+    ps = sub.add_parser("serve", help="Local browser UI for /Volumes/sentryusb")
+    ps.add_argument("--source", type=Path, default=Path("/Volumes/sentryusb"))
+    ps.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR)
+    ps.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    ps.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
+    ps.add_argument("--cache-dir", type=Path, default=Path("cache"))
+    ps.add_argument("--host", default="127.0.0.1")
+    ps.add_argument("--port", type=int, default=8765)
+    ps.add_argument("--debug", action="store_true")
     return p
 
 def _cmd_calibrate(args) -> int:
@@ -88,6 +98,19 @@ def _cmd_verify(args) -> int:
     print(f"[verify] wrote {args.out_html}", file=sys.stderr)
     return 0
 
+def _cmd_serve(args) -> int:
+    from dcwb.serve.app import create_app
+    cfg = json.loads(args.pipeline_config.read_text()) if args.pipeline_config.exists() else {}
+    app = create_app(
+        usb_root=args.source,
+        profiles_dir=args.profiles_dir,
+        out_root=args.out_root,
+        pipeline_cfg=cfg,
+        cache_root=args.cache_dir,
+    )
+    app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)
+    return 0
+
 def _cmd_render_all(args) -> int:
     cfg = json.loads(args.pipeline_config.read_text())
     events = sorted(p for p in args.source.iterdir() if p.is_dir())
@@ -114,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         "render": _cmd_render,
         "verify": _cmd_verify,
         "render-all": _cmd_render_all,
+        "serve": _cmd_serve,
     }[args.cmd](args)
 
 if __name__ == "__main__":
