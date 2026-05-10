@@ -6,6 +6,9 @@ corrected/
 logs/
 calibration_report.html
 
+# UI preview cache
+cache/
+
 # Python
 __pycache__/
 *.pyc

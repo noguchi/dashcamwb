@@ -8,6 +8,7 @@ dependencies = [
   "opencv-python>=4.9",
   "astral>=3.2",
   "jinja2>=3.1",
+  "flask>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +28,11 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-dcwb = ["templates/*.j2"]
+dcwb = [
+  "templates/*.j2",
+  "serve/templates/*.j2",
+  "serve/static/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
