@@ -1,0 +1,30 @@
+{
+  "camera": "right_pillar",
+  "gain_r": 1.0620770828489432,
+  "gain_g": 1.0,
+  "gain_b": 1.128832523497646,
+  "matrix_3x3": [
+    [
+      1.0620770828489432,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.128832523497646
+    ]
+  ],
+  "calibration": {
+    "samples_used": 167959676,
+    "events_sampled": 134,
+    "method": "robust_white_patch_median",
+    "calibrated_at": "2026-05-10T12:50:20.813887+00:00",
+    "samples_per_event_max": 3
+  }
+}
