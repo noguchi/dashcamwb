@@ -2,13 +2,18 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import timedelta, timezone
 from pathlib import Path
 import cv2
 import numpy as np
 from dcwb.profile import Profile
 from dcwb.ffmpeg_wrap import probe_duration, extract_frame
 from dcwb.render import compose_clip_matrix, estimate_scene_gain
+from dcwb.calibrate import read_event_timestamp, read_event_latlon
+from dcwb.daylight import is_daytime
 from dcwb.serve.index import Event, CAMERAS
+
+JST = timezone(timedelta(hours=9))
 
 
 @dataclass
@@ -30,6 +35,7 @@ def compute_frame_triple(
     clip: Path,
     profile: Profile,
     awb_cfg: dict,
+    attenuation: float = 1.0,
 ) -> FrameTriple:
     duration = probe_duration(clip)
     before = extract_frame(clip, duration / 2.0)
@@ -45,9 +51,27 @@ def compute_frame_triple(
         profile, scene_gain,
         gain_min=float(awb_cfg["gain_min"]),
         gain_max=float(awb_cfg["gain_max"]),
+        attenuation=attenuation,
     )
     full = _apply_matrix(before, final_m)
     return FrameTriple(before=before, a_only=a_only, full=full, scene_gain=scene_gain)
+
+
+def _event_attenuation(event: Event, awb_cfg: dict) -> float:
+    """Match render.py: 1.0 in daytime, awb_cfg['night_attenuation'] otherwise.
+
+    Falls back to event.start (interpreted as JST) when event.json is absent
+    (RecentClips day-dirs).
+    """
+    ts = read_event_timestamp(event.path)
+    if ts is None:
+        ts = event.start
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=JST)
+    lat, lon = read_event_latlon(event.path)
+    if is_daytime(ts, lat=lat, lon=lon):
+        return 1.0
+    return float(awb_cfg.get("night_attenuation", 1.0))
 
 
 def to_png_bytes(img_rgb: np.ndarray) -> bytes:
@@ -103,10 +127,14 @@ def _pipeline_cfg_hash(awb_cfg: dict) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
-def _meta_current(meta: dict, profile_mtimes: dict[str, float], cfg_hash: str) -> bool:
+def _meta_current(
+    meta: dict, profile_mtimes: dict[str, float], cfg_hash: str, attenuation: float
+) -> bool:
     if meta.get("profile_mtimes") != profile_mtimes:
         return False
     if meta.get("pipeline_cfg_hash") != cfg_hash:
+        return False
+    if meta.get("attenuation") != attenuation:
         return False
     return True
 
@@ -125,6 +153,7 @@ def _render_one_camera(
     profiles_dir: Path,
     awb_cfg: dict,
     cache_dir: Path,
+    attenuation: float,
 ) -> tuple[str, tuple[float, float, float] | None, str | None]:
     before_p = cache_dir / f"{cam}_before.png"
     after_p = cache_dir / f"{cam}_after.png"
@@ -134,7 +163,7 @@ def _render_one_camera(
         return cam, None, "no clip for camera"
     try:
         prof = Profile.from_json(profiles_dir / f"{cam}.json")
-        triple = compute_frame_triple(clip, prof, awb_cfg)
+        triple = compute_frame_triple(clip, prof, awb_cfg, attenuation=attenuation)
         before_p.write_bytes(to_png_bytes(triple.before))
         after_p.write_bytes(to_png_bytes(triple.full))
         return cam, tuple(float(g) for g in triple.scene_gain), None
@@ -156,11 +185,12 @@ def ensure_previews(
     meta_path = cache_dir / "meta.json"
     profile_mtimes = _profile_mtimes(profiles_dir)
     cfg_hash = _pipeline_cfg_hash(awb_cfg)
+    attenuation = _event_attenuation(event, awb_cfg)
 
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text())
-            if _meta_current(meta, profile_mtimes, cfg_hash):
+            if _meta_current(meta, profile_mtimes, cfg_hash, attenuation):
                 paths = {
                     cam: {
                         "before": cache_dir / f"{cam}_before.png",
@@ -182,7 +212,7 @@ def ensure_previews(
     with ThreadPoolExecutor(max_workers=6) as pool:
         futs = [
             pool.submit(_render_one_camera, cam, _clip_for_camera(event, cam),
-                        profiles_dir, awb_cfg, cache_dir)
+                        profiles_dir, awb_cfg, cache_dir, attenuation)
             for cam in CAMERAS
         ]
         for fut in as_completed(futs):
@@ -193,6 +223,7 @@ def ensure_previews(
     meta_path.write_text(json.dumps({
         "profile_mtimes": profile_mtimes,
         "pipeline_cfg_hash": cfg_hash,
+        "attenuation": attenuation,
         "scene_gains": scene_gains,
         "errors": errors,
     }, indent=2))

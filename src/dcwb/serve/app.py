@@ -85,19 +85,26 @@ def create_app(
         preview = ensure_previews(ev, profiles_dir, pipeline_cfg, cache_root)
         rendered_dir = out_root / ev.name
         all_cams = ("front", "back", "left_pillar", "right_pillar", "left_repeater", "right_repeater")
-        cam_to_corrected: dict[str, str | None] = {cam: None for cam in all_cams}
+        expected_names = {clip.name for clip in ev.clips}
+        existing_names: set[str] = set()
         if rendered_dir.exists():
-            for f in rendered_dir.glob("*.mp4"):
-                for cam in all_cams:
-                    if f.stem.endswith("-" + cam):
-                        cam_to_corrected[cam] = f.name
-        rendered = rendered_dir.exists() and all(cam_to_corrected[cam] is not None for cam in all_cams)
+            existing_names = {
+                f.name for f in rendered_dir.glob("*.mp4") if f.name in expected_names
+            }
+        rendered = bool(expected_names) and expected_names.issubset(existing_names)
+        clips_by_cam: dict[str, list[tuple[str, str | None]]] = {cam: [] for cam in all_cams}
+        for clip in ev.clips:
+            for cam in all_cams:
+                if clip.stem.endswith("-" + cam):
+                    corrected = clip.name if clip.name in existing_names else None
+                    clips_by_cam[cam].append((clip.name, corrected))
+                    break
         job_id = request.args.get("job")
         return render_template(
             "event.html.j2",
             source=source, event=ev, preview=preview,
             rendered=rendered, job_id=job_id,
-            cam_to_corrected=cam_to_corrected,
+            clips_by_cam=clips_by_cam,
         )
 
     @app.route("/preview/<source>/<event_name>/<cam>/<kind>.png")
@@ -146,9 +153,9 @@ def create_app(
 
     @app.route("/corrected/<source>/<event_name>/<path:filename>")
     def corrected_file(source: str, event_name: str, filename: str):
-        target = (out_root / event_name / filename).resolve()
-        out_root_resolved = out_root.resolve()
-        if not target.is_relative_to(out_root_resolved):
+        event_root = (out_root / event_name).resolve()
+        target = (event_root / filename).resolve()
+        if not target.is_relative_to(event_root):
             abort(404)
         if not target.exists():
             abort(404)

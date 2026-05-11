@@ -117,6 +117,26 @@ def test_jobs_status_json(app, monkeypatch):
     assert payload["status"] in ("done", "queued", "running")
 
 
+def test_corrected_route_rejects_event_escape(app):
+    """Regression: /corrected/<src>/<event>/<filename> must be bounded by the
+    event directory. A traversal that escapes <event> but stays inside
+    out_root previously returned 200 with a sibling event's mp4."""
+    out_root = app.config["DCWB_OUT_ROOT"]
+    (out_root / "A").mkdir(parents=True)
+    (out_root / "B").mkdir(parents=True)
+    secret = b"this should not leak"
+    (out_root / "B" / "secret.mp4").write_bytes(secret)
+    client = app.test_client()
+    for path in (
+        "/corrected/SentryClips/A/%2e%2e/B/secret.mp4",
+        "/corrected/SentryClips/A/..%2fB%2fsecret.mp4",
+        "/corrected/SentryClips/A/%2e%2e%2fB%2fsecret.mp4",
+    ):
+        r = client.get(path)
+        assert not (r.status_code == 200 and r.data == secret), \
+            f"path traversal escape succeeded via {path}"
+
+
 def test_corrected_video_range(app):
     out_root = app.config["DCWB_OUT_ROOT"]
     rendered = out_root / "2026-05-05_13-50-46"

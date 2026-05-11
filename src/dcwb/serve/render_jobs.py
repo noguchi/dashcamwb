@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 from dcwb.render import render_event
-from .index import Event, CAMERAS
+from .index import Event
 
 Status = Literal["queued", "running", "done", "failed"]
 
@@ -24,16 +24,15 @@ class JobState:
     error: str | None = None
 
 
-def _is_already_rendered(out_root: Path, event_name: str) -> bool:
-    target = out_root / event_name
+def _is_already_rendered(out_root: Path, event: Event) -> bool:
+    target = out_root / event.name
     if not target.exists():
         return False
-    cams_seen: set[str] = set()
-    for f in target.glob("*.mp4"):
-        for cam in CAMERAS:
-            if f.stem.endswith("-" + cam):
-                cams_seen.add(cam)
-    return cams_seen == set(CAMERAS)
+    expected = {clip.name for clip in event.clips}
+    if not expected:
+        return False
+    existing = {f.name for f in target.glob("*.mp4")}
+    return expected.issubset(existing)
 
 
 class JobQueue:
@@ -57,7 +56,7 @@ class JobQueue:
 
     def enqueue(self, event: Event) -> str:
         with self._lock:
-            if _is_already_rendered(self.out_root, event.name):
+            if _is_already_rendered(self.out_root, event):
                 jid = str(uuid.uuid4())
                 self._states[jid] = JobState(
                     id=jid, source=event.source, event_name=event.name,

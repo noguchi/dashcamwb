@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import re
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 import cv2
@@ -81,6 +83,18 @@ def _list_clips_for_camera(source_root: Path, camera: str) -> list[Path]:
 def _event_dir_of(clip: Path) -> Path:
     return clip.parent
 
+_CLIP_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-")
+
+def _parse_clip_ts(clip: Path) -> datetime | None:
+    """Parse the YYYY-MM-DD_HH-MM-SS prefix of a Tesla clip filename as JST."""
+    m = _CLIP_TS_RE.match(clip.name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d_%H-%M-%S").replace(tzinfo=JST)
+    except ValueError:
+        return None
+
 def read_event_timestamp(event_dir: Path) -> datetime | None:
     """Read event.json["timestamp"]. Naive timestamps are interpreted as JST."""
     ev = event_dir / "event.json"
@@ -110,35 +124,58 @@ def calibrate_camera(
     source_root: Path,
     max_per_event: int = 3,
 ) -> Profile:
-    """Mine neutral pixels across all daytime clips for one camera and build a Profile."""
+    """Mine neutral pixels across all daytime clips for one camera and build a Profile.
+
+    Sample budget is per event_dir (not per clip): max_per_event frames are
+    distributed across the event's clips. For RecentClips day-dirs (no
+    event.json), the per-clip filename timestamp drives the daylight filter so
+    nighttime clips don't contaminate the profile.
+    """
     clips = _list_clips_for_camera(source_root, camera)
+    by_event: dict[Path, list[Path]] = defaultdict(list)
+    for clip in clips:
+        by_event[_event_dir_of(clip)].append(clip)
+
     all_pixels: list[np.ndarray] = []
     events_seen: set[Path] = set()
-    for clip in clips:
-        ev_dir = _event_dir_of(clip)
-        ts = read_event_timestamp(ev_dir)
+    for ev_dir, ev_clips in by_event.items():
+        ev_ts = read_event_timestamp(ev_dir)
         lat, lon = read_event_latlon(ev_dir)
-        if ts is not None and not is_daytime(ts, lat=lat, lon=lon):
+        if ev_ts is not None:
+            if not is_daytime(ev_ts, lat=lat, lon=lon):
+                continue
+            day_clips = list(ev_clips)
+        else:
+            day_clips = []
+            for c in ev_clips:
+                cts = _parse_clip_ts(c)
+                if cts is None or is_daytime(cts, lat=lat, lon=lon):
+                    day_clips.append(c)
+        if not day_clips:
             continue
-        try:
-            duration = probe_duration(clip)
-        except Exception:
-            continue
-        # 等間隔に最大 max_per_event 枚
-        n = max_per_event
-        ts_list = [duration * (i + 0.5) / n for i in range(n)]
-        for t in ts_list:
+        n_clips = len(day_clips)
+        base, rem = divmod(max_per_event, n_clips)
+        per_clip = [base + (1 if i < rem else 0) for i in range(n_clips)]
+        for clip, n_samples in zip(day_clips, per_clip):
+            if n_samples <= 0:
+                continue
             try:
-                img = extract_frame(clip, t)
+                duration = probe_duration(clip)
             except Exception:
                 continue
-            if not is_multicolor(img):
-                continue
-            pixels = find_neutral_pixels(img)
-            if pixels.shape[0] == 0:
-                continue
-            all_pixels.append(pixels)
-            events_seen.add(ev_dir)
+            ts_list = [duration * (i + 0.5) / n_samples for i in range(n_samples)]
+            for t in ts_list:
+                try:
+                    img = extract_frame(clip, t)
+                except Exception:
+                    continue
+                if not is_multicolor(img):
+                    continue
+                pixels = find_neutral_pixels(img)
+                if pixels.shape[0] == 0:
+                    continue
+                all_pixels.append(pixels)
+                events_seen.add(ev_dir)
     if not all_pixels:
         raise RuntimeError(f"no neutral samples found for camera={camera}")
     stacked = np.concatenate(all_pixels, axis=0).astype(np.float64)

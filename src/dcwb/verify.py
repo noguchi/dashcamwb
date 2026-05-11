@@ -4,6 +4,8 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from dcwb.profile import Profile
 from dcwb.render import CAMERAS, _camera_of
+from dcwb.calibrate import read_event_timestamp, read_event_latlon
+from dcwb.daylight import is_daytime
 from dcwb.serve.preview import compute_frame_triple, to_png_bytes
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -35,6 +37,12 @@ def generate_verify_report(
 ) -> None:
     cfg = pipeline_cfg if pipeline_cfg is not None else _DEFAULT_PIPELINE_CFG
     awb_cfg = cfg["awb"]
+    ts = read_event_timestamp(event_dir)
+    lat, lon = read_event_latlon(event_dir)
+    if ts is None or is_daytime(ts, lat=lat, lon=lon):
+        attenuation = 1.0
+    else:
+        attenuation = float(awb_cfg.get("night_attenuation", 1.0))
     profiles = {
         cam: Profile.from_json(profiles_dir / f"{cam}.json")
         for cam in CAMERAS
@@ -42,7 +50,7 @@ def generate_verify_report(
     rows = []
     for clip in sorted(event_dir.glob("*.mp4")):
         cam = _camera_of(clip)
-        triple = compute_frame_triple(clip, profiles[cam], awb_cfg)
+        triple = compute_frame_triple(clip, profiles[cam], awb_cfg, attenuation=attenuation)
         rows.append({
             "camera": cam,
             "scene_gain": [round(g, 3) for g in triple.scene_gain],

@@ -57,6 +57,60 @@ def test_geometric_median_robust_to_outliers():
     # 外れ値の影響を強く受けない (≈ 100)
     assert np.all(np.abs(med - 100.0) < 5.0)
 
+def test_calibrate_camera_caps_total_samples_per_event(tmp_path, monkeypatch):
+    """max_per_event is a per-event budget spread across the event's clips, not
+    a per-clip budget. Three segments × max_per_event=3 must produce 3 frame
+    extractions in total, not 9."""
+    from tests.fixtures.make_synthetic import make_clip
+    import dcwb.calibrate as cal_mod
+
+    ev_dir = tmp_path / "SentryClips" / "evt"
+    ev_dir.mkdir(parents=True)
+    for ts in ("2026-05-05_13-49-39", "2026-05-05_13-50-39", "2026-05-05_13-51-39"):
+        make_clip(ev_dir / f"{ts}-front.mp4", cast_rgb=(1.0, 1.0, 1.0))
+    (ev_dir / "event.json").write_text(
+        '{"timestamp":"2026-05-05T13:49:56","est_lat":"35.68","est_lon":"139.65"}'
+    )
+
+    calls: list[str] = []
+    real_extract = cal_mod.extract_frame
+
+    def spy(clip, t):
+        calls.append(clip.name)
+        return real_extract(clip, t)
+
+    monkeypatch.setattr(cal_mod, "extract_frame", spy)
+    cal_mod.calibrate_camera("front", source_root=tmp_path, max_per_event=3)
+    assert len(calls) == 3, f"expected 3 frame extractions for the event, got {len(calls)}"
+
+
+def test_calibrate_camera_filters_recentclips_night_by_filename(tmp_path, monkeypatch):
+    """RecentClips day-dirs lack event.json so the per-event timestamp filter
+    is None. The per-clip filename ts must drive the daylight filter so
+    nighttime clips don't bias the profile."""
+    from tests.fixtures.make_synthetic import make_clip
+    import dcwb.calibrate as cal_mod
+
+    day_dir = tmp_path / "RecentClips" / "2026-05-05"
+    day_dir.mkdir(parents=True)
+    make_clip(day_dir / "2026-05-05_13-00-00-front.mp4", cast_rgb=(1.0, 1.0, 1.0))
+    make_clip(day_dir / "2026-05-05_22-00-00-front.mp4", cast_rgb=(1.0, 1.0, 1.0))
+
+    sampled: list[str] = []
+    real_extract = cal_mod.extract_frame
+
+    def spy(clip, t):
+        sampled.append(clip.name)
+        return real_extract(clip, t)
+
+    monkeypatch.setattr(cal_mod, "extract_frame", spy)
+    cal_mod.calibrate_camera("front", source_root=tmp_path, max_per_event=3)
+    assert sampled, "expected the daytime clip to be sampled"
+    assert all("22-00-00" not in n for n in sampled), \
+        f"night clip leaked into calibration: {sampled}"
+    assert any("13-00-00" in n for n in sampled)
+
+
 def test_calibrate_camera_recovers_synthetic_cast(tmp_path):
     # 合成イベントで front カメラに既知のキャスト (R=1.10) を設定。
     # Sentry イベントの保存ルート構造を再現: <root>/SentryClips/<event>/...

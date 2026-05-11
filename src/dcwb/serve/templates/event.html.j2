@@ -42,10 +42,11 @@
     {% for cam in ['front','back','left_pillar','right_pillar','left_repeater','right_repeater'] %}
     <div class="video-cell">
       <h4>{{ cam }}</h4>
-      {% set fname = cam_to_corrected.get(cam) %}
-      {% if fname %}
-      <video controls preload="metadata" src="{{ url_for('corrected_file', source=source, event_name=event.name, filename=fname) }}"></video>
-      {% endif %}
+      {% for clip_name, corrected in clips_by_cam.get(cam, []) %}
+        {% if corrected %}
+        <video controls preload="metadata" src="{{ url_for('corrected_file', source=source, event_name=event.name, filename=corrected) }}"></video>
+        {% endif %}
+      {% endfor %}
     </div>
     {% endfor %}
   </div>

@@ -36,6 +36,35 @@ def test_enqueue_short_circuits_when_already_rendered(tmp_path):
     assert state.error is None
 
 
+def test_is_already_rendered_requires_every_clip_for_multi_segment(tmp_path):
+    """Regression: a multi-segment event must not be considered fully rendered
+    until every expected output mp4 exists (one per source clip). The previous
+    check accepted any single file per camera and silently dropped the trailing
+    segments from the UI."""
+    ev_dir = tmp_path / "SentryClips" / "evt"
+    ev_dir.mkdir(parents=True)
+    clips: list[Path] = []
+    for ts in ("2026-05-05_13-49-39", "2026-05-05_13-50-39"):
+        for cam in CAMERAS:
+            c = ev_dir / f"{ts}-{cam}.mp4"
+            c.write_bytes(b"")
+            clips.append(c)
+    ev = Event(
+        source="SentryClips", name="evt", path=ev_dir, clips=clips,
+        start=datetime(2026, 5, 5, 13, 49, 39),
+        end=datetime(2026, 5, 5, 13, 51, 39),
+    )
+    out_root = tmp_path / "corrected"
+    rendered = out_root / ev.name
+    rendered.mkdir(parents=True)
+    for cam in CAMERAS:
+        (rendered / f"2026-05-05_13-49-39-{cam}.mp4").write_bytes(b"x")
+    assert render_jobs._is_already_rendered(out_root, ev) is False
+    for cam in CAMERAS:
+        (rendered / f"2026-05-05_13-50-39-{cam}.mp4").write_bytes(b"x")
+    assert render_jobs._is_already_rendered(out_root, ev) is True
+
+
 def test_enqueue_invokes_render_event_when_missing(tmp_path, monkeypatch):
     ev = _event(tmp_path)
     out_root = tmp_path / "corrected"
