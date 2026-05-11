@@ -1,21 +1,32 @@
 # dcwb — Tesla DashCam White Balance
 
-CLI pipeline that white-balances Tesla Model 3 Highland DashCam footage to D65 sRGB neutral.
+Tesla Model 3 Highland のドライブレコーダ映像（SentryClips / SavedClips / RecentClips）を、D65 sRGB の白に合わせて補正する CLI／ローカル Web UI です。
 
-Design spec: [`docs/superpowers/specs/2026-05-09-tesla-dashcam-wb-design.md`](docs/superpowers/specs/2026-05-09-tesla-dashcam-wb-design.md)
+設計仕様: [`docs/superpowers/specs/2026-05-09-tesla-dashcam-wb-design.md`](docs/superpowers/specs/2026-05-09-tesla-dashcam-wb-design.md)
 
-## Setup
+## このツールが解決する課題
 
-Requires Python 3.11+ and `ffmpeg` (with VideoToolbox on Apple Silicon for runtime; `libx264` for tests).
+Tesla 純正の DashCam 出力は、6 つのカメラ（front / back / 左右ピラー / 左右リピータ）でそれぞれホワイトバランスが微妙にズレています。同じ白い対象物でも front は赤め、left_pillar は青め、といった具合です。素のままで動画を並べると違和感が出ますし、後で映像を二次利用するときに色味が揃わなくて困ります。
+
+dcwb は次の 2 段構えで補正します。
+
+1. **A: カメラごとの恒常的なキャスト**を、過去のクリップから統計的に推定して 3x3 行列にする（オフラインで一度だけ）。
+2. **B: クリップ単位のシーン光（昼/夕/夜の色温度差）**を Shades-of-Gray 法でその場で推定し、A と合成して最終 3x3 行列にする。
+
+夜間・薄暮のイベントでは B の影響が過大になりがちなので、`night_attenuation` で減衰させた行列を使います。
+
+## セットアップ
+
+Python 3.11+ と `ffmpeg` が必要です。Apple Silicon では実利用時 `h264_videotoolbox`、テストでは `libx264` を使います。
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
 
-## Workflow
+## 4 ステップの基本ワークフロー
 
-1. **Calibrate** (one-time, re-run if Tesla firmware changes camera color):
+### 1. キャリブレーション（初回のみ／カメラ交換やファーム更新時に再実行）
 
 ```bash
 .venv/bin/dcwb calibrate \
@@ -24,9 +35,12 @@ python3 -m venv .venv
   --max-samples-per-event 3
 ```
 
-This mines neutral pixels from all daytime Sentry/Recent/Saved clips and writes `profiles/<camera>.json` for each of the 6 cameras.
+`--source` 配下の `SentryClips/`, `RecentClips/`, `SavedClips/` をすべて走査し、**昼間の**フレームから「ニュートラル候補ピクセル」を集めて、6 カメラ分の `profiles/<camera>.json` を出力します。
 
-2. **Verify** the calibration on a sample event:
+- `--max-samples-per-event` は **イベント単位の予算**です。1 イベント内のクリップ数で按分されるので、長時間 RecentClips が結果を独占しません。
+- RecentClips のように `event.json` がない day-dir では、ファイル名のタイムスタンプ（JST と解釈）で昼夜判定するので、夜間クリップが混入しません。
+
+### 2. キャリブレーションの妥当性確認
 
 ```bash
 .venv/bin/dcwb verify /Volumes/sentryusb/SentryClips/2026-05-05_13-50-46 \
@@ -34,33 +48,93 @@ This mines neutral pixels from all daytime Sentry/Recent/Saved clips and writes 
 open verify.html
 ```
 
-The HTML shows three columns per camera: original, A-only, A+B (full pipeline). Confirm white objects look neutral and cameras match each other.
+カメラごとに「補正前」「A のみ」「A+B（最終）」の 3 列が並びます。白い対象物がニュートラルに見え、6 カメラで色味が揃っているか目視で確認してください。夜間イベントでは `night_attenuation` 適用後の見た目になります。
 
-3. **Render** an event when you need a corrected output:
+### 3. 映像の補正（CLI 単発／一括）
+
+単一イベント:
 
 ```bash
 .venv/bin/dcwb render /Volumes/sentryusb/SentryClips/2026-05-05_13-50-46
-# → /Users/noguchi/AI/dashcamwb/corrected/2026-05-05_13-50-46/
+# → corrected/2026-05-05_13-50-46/ に出力
 ```
 
-Or batch-render every event in a source directory:
+ディレクトリ配下を一括:
 
 ```bash
 .venv/bin/dcwb render-all --source /Volumes/sentryusb/SentryClips
 ```
 
-4. **Browse** events and apply WB interactively:
+出力先は `--out-root` で変更可。各イベントディレクトリには元のクリップと同名の補正済み mp4、`event.json` のコピー、補正パラメータを記録した `_pipeline.json` が並びます。
+
+### 4. ブラウザ UI（インタラクティブ運用）
 
 ```bash
 .venv/bin/dcwb serve --source /Volumes/sentryusb
 ```
 
-Opens at <http://127.0.0.1:8765/>. Lists SentryClips / SavedClips / RecentClips (RecentClips grouped by 10-minute gaps), shows before/after preview frames per camera, and can render full corrected videos to `corrected/<event>/` on demand.
+<http://127.0.0.1:8765/> を開くと、
 
-## Testing
+- SentryClips / SavedClips / RecentClips の一覧（RecentClips は 10 分ギャップでイベントに自動グルーピング）
+- 各イベントのプレビュー画像（カメラごとに before/after 1 枚ずつ）
+- 「Render video」ボタンで該当イベントを補正してその場で再生（複数セグメントのイベントもクリップごとに `<video>` が並びます）
 
-```bash
-.venv/bin/pytest -v
+を扱えます。背後でジョブキューが動き、補正済み mp4 は `corrected/<event>/` に蓄積されます。
+
+## 設定 (`pipeline.json`)
+
+リポジトリ同梱のデフォルトは以下です。CLI の `--pipeline-config` で差し替え可能。
+
+```json
+{
+  "awb": {
+    "method": "shades_of_gray",
+    "minkowski_p": 6,
+    "samples_per_clip": 10,
+    "saturation_high": 0.97,
+    "saturation_low": 0.03,
+    "gain_min": 0.7,
+    "gain_max": 1.5,
+    "night_attenuation": 0.5
+  }
+}
 ```
 
-Tests use synthetic mp4s generated with `libx264` for portability.
+| キー | 意味 |
+|------|------|
+| `samples_per_clip` | 1 クリップから抜くフレーム枚数（B レイヤ推定用） |
+| `saturation_high` / `saturation_low` | Shades-of-Gray で除外する飽和上下限 |
+| `gain_min` / `gain_max` | B レイヤのゲインがこの範囲外なら B を破棄して A のみで補正 |
+| `night_attenuation` | 夜間判定時に B レイヤを 1.0 に向けて線形減衰させる係数 |
+
+## テスト
+
+```bash
+.venv/bin/pytest -q
+```
+
+合成 mp4（`libx264`）でレンダリングまで含めて検証します。回帰テストとして以下を含みます:
+
+- 複数セグメントイベントの「レンダー済み」誤判定
+- `calibrate` のイベント単位サンプリングと RecentClips 夜間フィルタ
+- `/corrected/...` ルートのパストラバーサル防止
+- preview / verify が render と同じ夜間 attenuation を適用すること
+
+## ディレクトリ構成
+
+```
+src/dcwb/
+  cli.py            # サブコマンドのエントリポイント
+  calibrate.py      # A レイヤ（恒常キャスト）の統計マイニング
+  render.py         # A+B 合成 + ffmpeg 呼び出し
+  verify.py         # before / A only / full の HTML レポート
+  awb.py            # Shades-of-Gray 実装
+  matrix.py         # 3x3 行列ヘルパ
+  profile.py        # Profile / CalibrationMeta データクラス
+  daylight.py       # astral で昼夜判定
+  ffmpeg_wrap.py    # ffmpeg / OpenCV 抽出ラッパ
+  serve/            # Flask UI（app.py / preview.py / render_jobs.py / index.py）
+  templates/        # verify.html.j2
+tests/              # pytest（synthetic mp4 fixtures）
+docs/superpowers/   # 設計仕様 / 実装計画
+```
