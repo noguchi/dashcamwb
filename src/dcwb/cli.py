@@ -101,12 +101,15 @@ def _cmd_verify(args) -> int:
 def _cmd_serve(args) -> int:
     from dcwb.serve.app import create_app
     cfg = json.loads(args.pipeline_config.read_text()) if args.pipeline_config.exists() else {}
+    # Resolve to absolute paths: Flask's send_file() resolves relative paths
+    # against app.root_path (the package dir), not CWD, which would cause
+    # cache PNGs and corrected mp4s to 404 even when present.
     app = create_app(
-        usb_root=args.source,
-        profiles_dir=args.profiles_dir,
-        out_root=args.out_root,
+        usb_root=args.source.resolve(),
+        profiles_dir=args.profiles_dir.resolve(),
+        out_root=args.out_root.resolve(),
         pipeline_cfg=cfg,
-        cache_root=args.cache_dir,
+        cache_root=args.cache_dir.resolve(),
     )
     app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)
     return 0
