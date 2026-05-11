@@ -77,12 +77,15 @@ class JobQueue:
         return jid
 
     def get(self, job_id: str) -> JobState:
-        return self._states[job_id]
+        with self._lock:
+            return self._states[job_id]
 
     def _run(self, jid: str, event: Event) -> None:
-        state = self._states[jid]
-        state.status = "running"
-        state.started_at = datetime.now()
+        with self._lock:
+            state = self._states[jid]
+            state.status = "running"
+            state.started_at = datetime.now()
+        error: str | None = None
         try:
             if event.source == "RecentClips":
                 # symlink only the subset clips into a temp dir so render_event's
@@ -109,9 +112,9 @@ class JobQueue:
                     encoder=self.encoder,
                     bitrate_kbps=self.bitrate_kbps,
                 )
-            state.status = "done"
         except Exception as e:
-            state.status = "failed"
-            state.error = str(e)
-        finally:
+            error = str(e)
+        with self._lock:
+            state.status = "failed" if error else "done"
+            state.error = error
             state.finished_at = datetime.now()

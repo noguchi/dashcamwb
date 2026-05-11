@@ -146,7 +146,10 @@ def create_app(
 
     @app.route("/corrected/<source>/<event_name>/<path:filename>")
     def corrected_file(source: str, event_name: str, filename: str):
-        target = out_root / event_name / filename
+        target = (out_root / event_name / filename).resolve()
+        out_root_resolved = out_root.resolve()
+        if not target.is_relative_to(out_root_resolved):
+            abort(404)
         if not target.exists():
             abort(404)
         return send_file(target, mimetype="video/mp4", conditional=True)
