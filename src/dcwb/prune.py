@@ -106,6 +106,8 @@ def _in_intervals(ts: datetime, intervals: list[tuple[datetime, datetime]]) -> b
 
 def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]:
     """Low-motion RecentClips segments that pass the min-age and overlap guards."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=JST)
     intervals = _overlap_intervals(usb_root)
     cutoff = now - timedelta(hours=cfg["min_age_hours"])
     recent_root = usb_root / "RecentClips"

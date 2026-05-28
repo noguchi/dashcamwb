@@ -101,3 +101,27 @@ def test_overlap_guard_skips_sentry_window(tmp_path):
         (sev / f"2026-05-08_00-00-00-{cam}.mp4").write_bytes(b"")
     now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
     assert find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now) == []
+
+
+def test_min_age_boundary_segment_at_cutoff_included(tmp_path):
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    # now is exactly min_age_hours (48h) after the segment → ts == cutoff → included
+    now = datetime(2026, 5, 10, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
+    assert len(cands) == 1
+
+
+def test_overlap_boundary_segment_at_event_end_protected(tmp_path):
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-01-00")
+    # SentryClips event at 00:00:00 → Event.end == 00:01:00 (max-ts + 1 min)
+    sev = tmp_path / "SentryClips" / "2026-05-08_00-00-00"
+    sev.mkdir(parents=True)
+    for cam in CAMERAS:
+        (sev / f"2026-05-08_00-00-00-{cam}.mp4").write_bytes(b"")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    # segment ts == event end → inclusive overlap → protected
+    assert find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now) == []
