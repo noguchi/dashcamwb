@@ -6,15 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 開発コマンド
 
+パッケージ管理・実行はすべて **uv** を使う（pip / venv は使わない）。`ffmpeg`/`ffprobe` が PATH 上に必須。Python 3.11+ は uv が自動調達する。
+
 ```bash
-# セットアップ（Python 3.11+ と PATH 上の ffmpeg/ffprobe が必須）
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+# セットアップ（uv.lock どおりに同期。dev 依存も含める）
+uv sync --extra dev
 
 # テスト（pyproject.toml で testpaths=tests, addopts=-v 固定）
-.venv/bin/pytest                                  # 全件
-.venv/bin/pytest tests/test_render.py             # 1 ファイル
-.venv/bin/pytest tests/test_render.py::test_name  # 1 ケース
+uv run --extra dev pytest                                  # 全件
+uv run --extra dev pytest tests/test_render.py             # 1 ファイル
+uv run --extra dev pytest tests/test_render.py::test_name  # 1 ケース
+
+# CLI 実行はすべて uv run 経由
+uv run dcwb render <event_dir>
 ```
 
 テストは合成 mp4 を **`libx264`** で生成・レンダーするため ffmpeg に libx264 が要る。実利用のデフォルトエンコーダは Apple Silicon の `h264_videotoolbox`（`--encoder` で切替）。

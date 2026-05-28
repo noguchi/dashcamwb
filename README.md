@@ -17,11 +17,14 @@ dcwb は次の 2 段構えで補正します。
 
 ## セットアップ
 
-Python 3.11+ と `ffmpeg` が必要です。Apple Silicon では実利用時 `h264_videotoolbox`、テストでは `libx264` を使います。
+パッケージ管理・実行はすべて [uv](https://docs.astral.sh/uv/) を使います。`ffmpeg` が PATH に必要です（Apple Silicon では実利用時 `h264_videotoolbox`、テストでは `libx264` を使用）。Python 3.11+ は uv が自動で用意します。
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+# 実行環境を作成（uv.lock どおりに同期。dev 依存も含める）
+uv sync --extra dev
+
+# 以後はすべて uv run 経由で実行（毎回 uv.lock に沿って自動同期してから呼ぶ）
+uv run dcwb --help
 ```
 
 ## 4 ステップの基本ワークフロー
@@ -29,7 +32,7 @@ python3 -m venv .venv
 ### 1. キャリブレーション（初回のみ／カメラ交換やファーム更新時に再実行）
 
 ```bash
-.venv/bin/dcwb calibrate \
+uv run dcwb calibrate \
   --source /Volumes/sentryusb \
   --profiles-dir profiles \
   --max-samples-per-event 3
@@ -43,7 +46,7 @@ python3 -m venv .venv
 ### 2. キャリブレーションの妥当性確認
 
 ```bash
-.venv/bin/dcwb verify /Volumes/sentryusb/SentryClips/2026-05-05_13-50-46 \
+uv run dcwb verify /Volumes/sentryusb/SentryClips/2026-05-05_13-50-46 \
   --out-html verify.html
 open verify.html
 ```
@@ -55,14 +58,14 @@ open verify.html
 単一イベント:
 
 ```bash
-.venv/bin/dcwb render /Volumes/sentryusb/SentryClips/2026-05-05_13-50-46
+uv run dcwb render /Volumes/sentryusb/SentryClips/2026-05-05_13-50-46
 # → corrected/2026-05-05_13-50-46/ に出力
 ```
 
 ディレクトリ配下を一括:
 
 ```bash
-.venv/bin/dcwb render-all --source /Volumes/sentryusb/SentryClips
+uv run dcwb render-all --source /Volumes/sentryusb/SentryClips
 ```
 
 出力先は `--out-root` で変更可。各イベントディレクトリには元のクリップと同名の補正済み mp4、`event.json` のコピー、補正パラメータを記録した `_pipeline.json` が並びます。
@@ -70,7 +73,7 @@ open verify.html
 ### 4. ブラウザ UI（インタラクティブ運用）
 
 ```bash
-.venv/bin/dcwb serve --source /Volumes/sentryusb
+uv run dcwb serve --source /Volumes/sentryusb
 ```
 
 <http://127.0.0.1:8765/> を開くと、
@@ -87,15 +90,15 @@ open verify.html
 
 ```bash
 # まずドライラン（何も消さない、候補をレポート表示）
-dcwb prune-recent --source /Volumes/sentryusb
+uv run dcwb prune-recent --source /Volumes/sentryusb
 
 # 問題なければ隔離実行（@dcwb_trash へ移動、期限切れは同時に削除）
-dcwb prune-recent --source /Volumes/sentryusb --apply
+uv run dcwb prune-recent --source /Volumes/sentryusb --apply
 
 # 誤って隔離したセグメントを元に戻す
-dcwb prune-recent --source /Volumes/sentryusb --restore 2026-05-08_00-00-00
+uv run dcwb prune-recent --source /Volumes/sentryusb --restore 2026-05-08_00-00-00
 # すべて戻す場合は all
-dcwb prune-recent --source /Volumes/sentryusb --restore all
+uv run dcwb prune-recent --source /Volumes/sentryusb --restore all
 ```
 
 - 直近 48 時間のクリップ、および SentryClips/SavedClips のイベント時間に重なるクリップは保護されます。
@@ -132,7 +135,7 @@ dcwb prune-recent --source /Volumes/sentryusb --restore all
 ## テスト
 
 ```bash
-.venv/bin/pytest -q
+uv run --extra dev pytest -q
 ```
 
 合成 mp4（`libx264`）でレンダリングまで含めて検証します。回帰テストとして以下を含みます:
