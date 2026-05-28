@@ -218,3 +218,30 @@ def test_purge_keeps_fresh_quarantined(tmp_path):
     assert n == 0
     trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
     assert len(list(trash.glob("*.mp4"))) == 6
+
+
+def test_purge_already_missing_trash_file_still_purges_manifest(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, purge, _load_manifest, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0), DEFAULT_PRUNE_CFG, t0)
+    # simulate external cleanup: delete trash files before purge runs
+    trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
+    for f in trash.glob("*.mp4"):
+        f.unlink()
+    n = purge(tmp_path, DEFAULT_PRUNE_CFG, now=t0 + timedelta(days=15))
+    assert n == 6  # still flips manifest status even though files were already gone
+    rows = _load_manifest(tmp_path / "@dcwb_trash")
+    assert all(r["status"] == "purged" for r in rows)
+
+
+def test_purge_boundary_exactly_retention_days_purges(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, purge, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0), DEFAULT_PRUNE_CFG, t0)
+    # exactly retention_days later → quarantined_at == cutoff → <= is inclusive → purged
+    n = purge(tmp_path, DEFAULT_PRUNE_CFG, now=t0 + timedelta(days=14))
+    assert n == 6

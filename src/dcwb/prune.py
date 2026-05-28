@@ -186,6 +186,8 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
 
 def purge(usb_root: Path, cfg: dict, now: datetime) -> int:
     """Delete trash files whose quarantine is older than retention_days."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=JST)
     trash_root = usb_root / cfg["trash_dir"]
     rows = _load_manifest(trash_root)
     cutoff = now - timedelta(days=cfg["retention_days"])
