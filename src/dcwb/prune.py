@@ -23,6 +23,8 @@ DEFAULT_PRUNE_CFG = {
     "trash_dir": "@dcwb_trash",
 }
 
+SEGMENT_SPAN = timedelta(minutes=1)  # Tesla RecentClips segment ≈ 1 minute of footage
+
 
 @dataclass
 class Segment:
@@ -101,8 +103,9 @@ def _overlap_intervals(usb_root: Path) -> list[tuple[datetime, datetime]]:
     return intervals
 
 
-def _in_intervals(ts: datetime, intervals: list[tuple[datetime, datetime]]) -> bool:
-    return any(start <= ts <= end for start, end in intervals)
+def _overlaps(seg_start: datetime, seg_end: datetime, intervals: list[tuple[datetime, datetime]]) -> bool:
+    """True if [seg_start, seg_end] overlaps any [start, end] interval."""
+    return any(start <= seg_end and seg_start <= end for start, end in intervals)
 
 
 def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]:
@@ -121,7 +124,7 @@ def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]
         for seg in _segments_for_day(day_dir):
             if seg.ts > cutoff:            # too new — protect the live buffer
                 continue
-            if _in_intervals(seg.ts, intervals):  # overlaps a flagged event
+            if _overlaps(seg.ts, seg.ts + SEGMENT_SPAN, intervals):  # segment window overlaps a flagged event
                 continue
             score = segment_motion_score(seg, cfg)
             if score < cfg["motion_threshold"]:

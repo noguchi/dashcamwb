@@ -314,3 +314,29 @@ def test_format_report_lists_candidates(tmp_path):
 def test_format_report_empty():
     from dcwb.prune import format_report
     assert "no low-motion" in format_report([])
+
+
+def test_overlap_guard_protects_segment_whose_tail_touches_event_start(tmp_path):
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-04-00")  # spans 00:04:00–00:05:00
+    # Sentry event starts at 00:05:00 → the segment's tail overlaps the event's first moment
+    sev = tmp_path / "SentryClips" / "2026-05-08_00-05-00"
+    sev.mkdir(parents=True)
+    for cam in CAMERAS:
+        (sev / f"2026-05-08_00-05-00-{cam}.mp4").write_bytes(b"")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    assert find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now) == []
+
+
+def test_overlap_guard_allows_segment_with_gap_before_event(tmp_path):
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-03-00")  # spans 00:03:00–00:04:00
+    # event [00:05:00, 00:06:00] — a clear 1-min gap, must NOT over-protect
+    sev = tmp_path / "SentryClips" / "2026-05-08_00-05-00"
+    sev.mkdir(parents=True)
+    for cam in CAMERAS:
+        (sev / f"2026-05-08_00-05-00-{cam}.mp4").write_bytes(b"")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    assert len(find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)) == 1
