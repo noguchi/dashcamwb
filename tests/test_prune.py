@@ -161,3 +161,32 @@ def test_quarantine_leaves_sentryclips_untouched(tmp_path):
     cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
     quarantine(tmp_path, cands, DEFAULT_PRUNE_CFG, now)
     assert len(list(sev.glob("*.mp4"))) == 6  # Sentry files all present
+
+
+def test_quarantine_skips_when_already_in_trash(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, _load_manifest, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
+    # re-create sources at the same paths (simulate re-run / Tesla name reuse)
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    rows2 = quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
+    assert rows2 == []                                 # all dests existed → skipped
+    assert len(list(day.glob("*.mp4"))) == 6           # sources untouched (not lost)
+    trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
+    assert len(list(trash.glob("*.mp4"))) == 6         # trash not duplicated/overwritten
+    assert len(_load_manifest(tmp_path / "@dcwb_trash")) == 6
+
+
+def test_quarantine_accumulates_manifest_across_calls(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, _load_manifest, DEFAULT_PRUNE_CFG
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    day1 = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day1, "2026-05-08_00-00-00")
+    quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
+    day2 = tmp_path / "RecentClips" / "2026-05-09"
+    _make_static_segment(day2, "2026-05-09_00-00-00")
+    rows2 = quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
+    assert len(rows2) == 6                              # only new rows returned
+    assert len(_load_manifest(tmp_path / "@dcwb_trash")) == 12  # accumulated existing+new

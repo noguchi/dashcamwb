@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 import shutil
 import sys
 import uuid
@@ -142,11 +143,20 @@ def _load_manifest(trash_root: Path) -> list[dict]:
 def _write_manifest(trash_root: Path, rows: list[dict]) -> None:
     trash_root.mkdir(parents=True, exist_ok=True)
     body = "\n".join(json.dumps(r) for r in rows)
-    _manifest_path(trash_root).write_text(body + ("\n" if rows else ""))
+    path = _manifest_path(trash_root)
+    tmp = path.parent / (path.name + ".tmp")
+    tmp.write_text(body + ("\n" if rows else ""))
+    os.replace(tmp, path)
 
 
 def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: datetime) -> list[dict]:
-    """Move each candidate segment's files into the trash and append manifest rows."""
+    """Move each candidate segment's files into the trash and append manifest rows.
+
+    Moves happen first, then the manifest is written once. Intended for a manual
+    single-user CLI: if the process is killed mid-run, already-moved files may lack
+    manifest rows and must be reconciled against the trash dir by hand. Files whose
+    trash destination already exists are skipped (never overwritten).
+    """
     trash_root = usb_root / cfg["trash_dir"]
     rows = _load_manifest(trash_root)
     new_rows: list[dict] = []
@@ -155,6 +165,9 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
         for clip in seg.clips:
             rel = clip.relative_to(usb_root)
             dest = trash_root / rel
+            if dest.exists():
+                print(f"[prune] skip (already in trash): {rel.as_posix()}", file=sys.stderr)
+                continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(clip), str(dest))
             new_rows.append({
