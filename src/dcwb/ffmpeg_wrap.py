@@ -29,6 +29,25 @@ def extract_frame(path: Path, t: float) -> np.ndarray:
     finally:
         cap.release()
 
+def extract_frames(path: Path, times: list[float]) -> list[np.ndarray]:
+    """Decode frames at the given timestamps (seconds) in one capture session.
+
+    Returns RGB uint8 (H, W, 3) frames. Frames that fail to decode are skipped,
+    so the result may be shorter than `times`.
+    """
+    cap = cv2.VideoCapture(str(path))
+    out: list[np.ndarray] = []
+    try:
+        for t in times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ok, bgr = cap.read()
+            if ok and bgr is not None:
+                out.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+    finally:
+        cap.release()
+    return out
+
+
 def render_with_matrix(
     src: Path,
     dst: Path,

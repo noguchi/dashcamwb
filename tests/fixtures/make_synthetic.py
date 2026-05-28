@@ -64,3 +64,21 @@ def make_event(
         '"street":"","est_lat":"35.68","est_lon":"139.65",'
         '"reason":"sentry_aware_object_detection","camera":"5"}'
     )
+
+def make_motion_clip(
+    out_path: Path,
+    duration_sec: float = 3.0,
+    width: int = 320,
+    height: int = 240,
+) -> None:
+    """Generate an mp4 with strong frame-to-frame motion (animated testsrc2)."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", f"testsrc2=s={width}x{height}:d={duration_sec}:r=30",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast",
+        str(out_path),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
