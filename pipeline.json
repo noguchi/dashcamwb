@@ -8,5 +8,13 @@
     "gain_min": 0.7,
     "gain_max": 1.5,
     "night_attenuation": 0.5
+  },
+  "prune": {
+    "motion_threshold": 2.0,
+    "frames_sampled": 8,
+    "cameras_analyzed": ["front"],
+    "min_age_hours": 48,
+    "retention_days": 14,
+    "trash_dir": "@dcwb_trash"
   }
 }

@@ -298,3 +298,19 @@ def test_restore_unknown_segment_id_returns_zero(tmp_path):
     t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
     quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0), DEFAULT_PRUNE_CFG, t0)
     assert restore(tmp_path, DEFAULT_PRUNE_CFG, "no-such-id") == 0
+
+
+def test_format_report_lists_candidates(tmp_path):
+    from dcwb.prune import find_candidates, format_report, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
+    report = format_report(cands)
+    assert "2026-05-08_00-00-00" in report
+    assert "1 segment" in report
+
+
+def test_format_report_empty():
+    from dcwb.prune import format_report
+    assert "no low-motion" in format_report([])

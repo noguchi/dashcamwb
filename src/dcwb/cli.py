@@ -2,10 +2,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
-from dcwb.calibrate import calibrate_camera
+from dcwb.calibrate import calibrate_camera, JST
 from dcwb.render import render_event, CAMERAS
 from dcwb.verify import generate_verify_report
+from dcwb import prune as prune_mod
 
 DEFAULT_PROFILES_DIR = Path("profiles")
 DEFAULT_OUT_ROOT = Path("/Users/noguchi/AI/dashcamwb/corrected")
@@ -53,6 +55,15 @@ def _build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--host", default="127.0.0.1")
     ps.add_argument("--port", type=int, default=8765)
     ps.add_argument("--debug", action="store_true")
+
+    pp = sub.add_parser("prune-recent", help="Quarantine low-motion RecentClips (dry-run by default)")
+    pp.add_argument("--source", type=Path, default=Path("/Volumes/sentryusb"))
+    pp.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
+    pp.add_argument("--apply", action="store_true", help="Quarantine candidates (then purge expired)")
+    pp.add_argument("--purge", action="store_true", help="Delete trash past the retention window")
+    pp.add_argument("--restore", metavar="SEGMENT_ID|all", help="Restore quarantined segment(s)")
+    pp.add_argument("--retention-days", type=int, default=None, help="Override retention_days")
+
     return p
 
 def _cmd_calibrate(args) -> int:
@@ -132,6 +143,32 @@ def _cmd_render_all(args) -> int:
             print(f"[render-all] FAILED {ev.name}: {e}", file=sys.stderr)
     return 0
 
+def _cmd_prune(args) -> int:
+    usb_root = args.source.resolve()
+    full = json.loads(args.pipeline_config.read_text()) if args.pipeline_config.exists() else {}
+    cfg = {**prune_mod.DEFAULT_PRUNE_CFG, **full.get("prune", {})}
+    if args.retention_days is not None:
+        cfg["retention_days"] = args.retention_days
+    now = datetime.now(JST)
+
+    if args.restore:
+        n = prune_mod.restore(usb_root, cfg, args.restore)
+        print(f"[prune] restored {n} file(s)", file=sys.stderr)
+        return 0
+
+    candidates = prune_mod.find_candidates(usb_root, cfg, now)
+    print(prune_mod.format_report(candidates))
+
+    if args.apply:
+        rows = prune_mod.quarantine(usb_root, candidates, cfg, now)
+        purged = prune_mod.purge(usb_root, cfg, now)
+        print(f"[prune] quarantined {len(rows)} file(s); purged {purged} expired", file=sys.stderr)
+    elif args.purge:
+        purged = prune_mod.purge(usb_root, cfg, now)
+        print(f"[prune] purged {purged} expired file(s)", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -141,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         "verify": _cmd_verify,
         "render-all": _cmd_render_all,
         "serve": _cmd_serve,
+        "prune-recent": _cmd_prune,
     }[args.cmd](args)
 
 if __name__ == "__main__":

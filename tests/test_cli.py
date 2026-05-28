@@ -3,6 +3,9 @@ import sys
 import pytest
 from pathlib import Path
 from dcwb import cli
+from dcwb.cli import main
+from dcwb.serve.index import CAMERAS
+from tests.fixtures.make_synthetic import make_clip
 
 def test_cli_no_args_prints_help(capsys):
     with pytest.raises(SystemExit):
@@ -69,3 +72,37 @@ def test_serve_help_parses(capsys):
     assert args.cmd == "serve"
     assert args.port == 9000
     assert str(args.source) == "/Volumes/sentryusb"
+
+
+def test_cli_prune_recent_dry_run_default(tmp_path, capsys):
+    usb = tmp_path / "usb"
+    day = usb / "RecentClips" / "2020-01-01"  # old → always past min-age
+    day.mkdir(parents=True)
+    for cam in CAMERAS:
+        make_clip(day / f"2020-01-01_00-00-00-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    rc = main([
+        "prune-recent",
+        "--source", str(usb),
+        "--pipeline-config", str(tmp_path / "absent.json"),
+    ])
+    assert rc == 0
+    assert len(list(day.glob("*.mp4"))) == 6  # dry-run: nothing moved
+    assert "2020-01-01_00-00-00" in capsys.readouterr().out
+
+
+def test_cli_prune_recent_apply_quarantines(tmp_path):
+    usb = tmp_path / "usb"
+    day = usb / "RecentClips" / "2020-01-01"
+    day.mkdir(parents=True)
+    for cam in CAMERAS:
+        make_clip(day / f"2020-01-01_00-00-00-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    rc = main([
+        "prune-recent",
+        "--source", str(usb),
+        "--pipeline-config", str(tmp_path / "absent.json"),
+        "--apply",
+    ])
+    assert rc == 0
+    assert list(day.glob("*.mp4")) == []
+    trash = usb / "@dcwb_trash" / "RecentClips" / "2020-01-01"
+    assert len(list(trash.glob("*.mp4"))) == 6

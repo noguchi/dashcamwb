@@ -205,6 +205,25 @@ def purge(usb_root: Path, cfg: dict, now: datetime) -> int:
     return purged
 
 
+def format_report(candidates: list[Candidate]) -> str:
+    if not candidates:
+        return "[prune] no low-motion candidates found."
+    by_day: dict[str, list[Candidate]] = {}
+    for c in candidates:
+        by_day.setdefault(c.segment.day_dir.name, []).append(c)
+    lines = ["[prune] low-motion candidates (dry-run unless --apply):"]
+    total_files = 0
+    for day in sorted(by_day):
+        cands = sorted(by_day[day], key=lambda x: x.segment.ts)
+        lines.append(f"  {day}: {len(cands)} segment(s)")
+        for c in cands:
+            n = len(c.segment.clips)
+            total_files += n
+            lines.append(f"    {c.segment.ts_str}  score={c.score:.2f}  files={n}")
+    lines.append(f"[prune] total: {len(candidates)} segment(s), {total_files} file(s)")
+    return "\n".join(lines)
+
+
 def restore(usb_root: Path, cfg: dict, segment_id: str) -> int:
     """Move quarantined files back to their original paths.
 
