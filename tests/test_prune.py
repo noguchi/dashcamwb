@@ -64,3 +64,40 @@ def test_segment_motion_score_ignores_non_analyzed_camera(tmp_path):
     seg = _segments_for_day(day)[0]
     # cameras_analyzed == ["front"], so the motion on `back` must be ignored
     assert segment_motion_score(seg, DEFAULT_PRUNE_CFG) < 2.0
+
+
+def _make_static_segment(day: Path, ts: str) -> None:
+    day.mkdir(parents=True, exist_ok=True)
+    for cam in CAMERAS:
+        make_clip(day / f"{ts}-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+
+
+def test_find_candidates_selects_static_segments(tmp_path):
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)  # well past min-age
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
+    assert len(cands) == 1
+    assert cands[0].segment.ts_str == "2026-05-08_00-00-00"
+    assert cands[0].score < DEFAULT_PRUNE_CFG["motion_threshold"]
+
+
+def test_min_age_guard_skips_recent_segments(tmp_path):
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    now = datetime(2026, 5, 8, 1, 0, tzinfo=JST)  # only 1h later (< 48h)
+    assert find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now) == []
+
+
+def test_overlap_guard_skips_sentry_window(tmp_path):
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    sev = tmp_path / "SentryClips" / "2026-05-08_00-00-00"
+    sev.mkdir(parents=True)
+    for cam in CAMERAS:
+        (sev / f"2026-05-08_00-00-00-{cam}.mp4").write_bytes(b"")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    assert find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now) == []

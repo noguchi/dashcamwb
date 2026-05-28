@@ -88,3 +88,39 @@ def segment_motion_score(segment: Segment, cfg: dict) -> float:
     if not scores:
         return float("inf")
     return max(scores)
+
+
+def _overlap_intervals(usb_root: Path) -> list[tuple[datetime, datetime]]:
+    """JST-aware [start, end] ranges of all SentryClips/SavedClips events."""
+    sources = scan_sources(usb_root)
+    intervals: list[tuple[datetime, datetime]] = []
+    for src in ("SentryClips", "SavedClips"):
+        for ev in sources[src]:
+            intervals.append((ev.start.replace(tzinfo=JST), ev.end.replace(tzinfo=JST)))
+    return intervals
+
+
+def _in_intervals(ts: datetime, intervals: list[tuple[datetime, datetime]]) -> bool:
+    return any(start <= ts <= end for start, end in intervals)
+
+
+def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]:
+    """Low-motion RecentClips segments that pass the min-age and overlap guards."""
+    intervals = _overlap_intervals(usb_root)
+    cutoff = now - timedelta(hours=cfg["min_age_hours"])
+    recent_root = usb_root / "RecentClips"
+    out: list[Candidate] = []
+    if not recent_root.exists():
+        return out
+    for day_dir in sorted(recent_root.iterdir()):
+        if not day_dir.is_dir():
+            continue
+        for seg in _segments_for_day(day_dir):
+            if seg.ts > cutoff:            # too new — protect the live buffer
+                continue
+            if _in_intervals(seg.ts, intervals):  # overlaps a flagged event
+                continue
+            score = segment_motion_score(seg, cfg)
+            if score < cfg["motion_threshold"]:
+                out.append(Candidate(segment=seg, score=score))
+    return out
