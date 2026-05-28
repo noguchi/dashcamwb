@@ -81,6 +81,27 @@ open verify.html
 
 を扱えます。背後でジョブキューが動き、補正済み mp4 は `corrected/<event>/` に蓄積されます。
 
+## RecentClips の整理（低モーション・クリップの隔離）
+
+動きの少ない RecentClips を自動で隔離し、保持期間経過後に削除します。SentryClips / SavedClips には一切触れません。
+
+```bash
+# まずドライラン（何も消さない、候補をレポート表示）
+dcwb prune-recent --source /Volumes/sentryusb
+
+# 問題なければ隔離実行（@dcwb_trash へ移動、期限切れは同時に削除）
+dcwb prune-recent --source /Volumes/sentryusb --apply
+
+# 誤って隔離したセグメントを元に戻す
+dcwb prune-recent --source /Volumes/sentryusb --restore 2026-05-08_00-00-00
+# すべて戻す場合は all
+dcwb prune-recent --source /Volumes/sentryusb --restore all
+```
+
+- 直近 48 時間のクリップ、および SentryClips/SavedClips のイベント時間に重なるクリップは保護されます。
+- 隔離されたファイルは `@dcwb_trash/` に 14 日間保持され、`--apply` または `--purge` 実行時に期限切れ分が削除されます。
+- 閾値・保持期間は `pipeline.json` の `prune` セクションで調整できます。
+
 ## 設定 (`pipeline.json`)
 
 リポジトリ同梱のデフォルトは以下です。CLI の `--pipeline-config` で差し替え可能。

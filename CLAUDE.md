@@ -20,7 +20,7 @@ python3 -m venv .venv
 テストは合成 mp4 を **`libx264`** で生成・レンダーするため ffmpeg に libx264 が要る。実利用のデフォルトエンコーダは Apple Silicon の `h264_videotoolbox`（`--encoder` で切替）。
 
 CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を公開）:
-`calibrate` / `render <event_dir>` / `verify <event_dir>` / `render-all --source <dir>` / `serve`。
+`calibrate` / `render <event_dir>` / `verify <event_dir>` / `render-all --source <dir>` / `serve` / `prune-recent`。
 
 ## アーキテクチャ
 
@@ -50,6 +50,10 @@ CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を
 - `render_jobs.JobQueue` は `max_workers=1` の直列キュー。`JobState` は全フィールド `_lock` 下で読み書きする。RecentClips の擬似イベントは、該当クリップだけを temp dir に **symlink** してから `render_event` に渡す（`glob("*.mp4")` がイベント範囲だけを拾うように）。
 - 「レンダー済み」判定は「期待クリップ名の集合 ⊆ 既存 mp4 名」で行う（複数セグメントイベントの誤判定が過去のバグ。回帰テストあり）。
 - `/corrected/...` ルートは `is_relative_to` でパストラバーサルを防ぐ。`serve` 起動時、CLI 側で全パス引数を `.resolve()` してから `create_app` に渡す（Flask の `send_file` は相対パスを CWD でなくパッケージディレクトリ基準で解決するため）。
+
+### prune-recent（低モーション RecentClips の隔離）
+
+`prune_mod.find_candidates` が `front` カメラの間引きフレーム間差分スコアで低モーションセグメントを検出し、`@dcwb_trash/` へ隔離（`manifest.jsonl` で管理）する。デフォルトはドライラン。`--apply` で隔離実行と期限切れ削除、`--purge` で削除のみ、`--restore SEGMENT_ID|all` で復元。`min_age_hours`（既定 48h）以内の新しいセグメントと、SentryClips/SavedClips のイベント時間窓に重なるセグメントはスキップして保護する。パラメータは `pipeline.json` の `prune` セクション（`motion_threshold`, `frames_sampled`, `cameras_analyzed`, `min_age_hours`, `retention_days`, `trash_dir`）で調整可能。
 
 ### 時刻・昼夜判定
 
