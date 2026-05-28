@@ -224,6 +224,9 @@ def restore(usb_root: Path, cfg: dict, segment_id: str) -> int:
         if orig.exists():
             print(f"[prune] restore skip (exists): {row['original_path']}", file=sys.stderr)
             continue
+        if not tp.exists():
+            print(f"[prune] restore skip (trash missing): {row['trash_path']}", file=sys.stderr)
+            continue
         orig.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(tp), str(orig))
         row["status"] = "restored"

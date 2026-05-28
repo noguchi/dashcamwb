@@ -273,3 +273,28 @@ def test_restore_skips_on_collision(tmp_path):
     n = restore(tmp_path, DEFAULT_PRUNE_CFG, "all")
     assert n == 5  # 6 minus the colliding front
     assert (day / "2026-05-08_00-00-00-front.mp4").read_bytes() == b"collision"
+
+
+def test_restore_skips_when_trash_file_missing(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, restore, _load_manifest, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0), DEFAULT_PRUNE_CFG, t0)
+    # externally remove the trash files before restore runs
+    trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
+    for f in trash.glob("*.mp4"):
+        f.unlink()
+    n = restore(tmp_path, DEFAULT_PRUNE_CFG, "all")  # must not raise
+    assert n == 0
+    rows = _load_manifest(tmp_path / "@dcwb_trash")
+    assert all(r["status"] == "quarantined" for r in rows)  # left intact for a later retry
+
+
+def test_restore_unknown_segment_id_returns_zero(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, restore, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0), DEFAULT_PRUNE_CFG, t0)
+    assert restore(tmp_path, DEFAULT_PRUNE_CFG, "no-such-id") == 0
