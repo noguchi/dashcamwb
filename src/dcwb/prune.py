@@ -126,3 +126,46 @@ def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]
             if score < cfg["motion_threshold"]:
                 out.append(Candidate(segment=seg, score=score))
     return out
+
+
+def _manifest_path(trash_root: Path) -> Path:
+    return trash_root / "manifest.jsonl"
+
+
+def _load_manifest(trash_root: Path) -> list[dict]:
+    p = _manifest_path(trash_root)
+    if not p.exists():
+        return []
+    return [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
+
+
+def _write_manifest(trash_root: Path, rows: list[dict]) -> None:
+    trash_root.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(json.dumps(r) for r in rows)
+    _manifest_path(trash_root).write_text(body + ("\n" if rows else ""))
+
+
+def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: datetime) -> list[dict]:
+    """Move each candidate segment's files into the trash and append manifest rows."""
+    trash_root = usb_root / cfg["trash_dir"]
+    rows = _load_manifest(trash_root)
+    new_rows: list[dict] = []
+    for cand in candidates:
+        seg = cand.segment
+        for clip in seg.clips:
+            rel = clip.relative_to(usb_root)
+            dest = trash_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(clip), str(dest))
+            new_rows.append({
+                "id": uuid.uuid4().hex,
+                "segment_id": seg.ts_str,
+                "original_path": rel.as_posix(),
+                "trash_path": dest.relative_to(usb_root).as_posix(),
+                "segment_time": seg.ts.isoformat(),
+                "quarantined_at": now.astimezone(timezone.utc).isoformat(),
+                "motion_score": round(cand.score, 4),
+                "status": "quarantined",
+            })
+    _write_manifest(trash_root, rows + new_rows)
+    return new_rows

@@ -125,3 +125,39 @@ def test_overlap_boundary_segment_at_event_end_protected(tmp_path):
     now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
     # segment ts == event end → inclusive overlap → protected
     assert find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now) == []
+
+
+def test_quarantine_moves_files_and_writes_manifest(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
+    rows = quarantine(tmp_path, cands, DEFAULT_PRUNE_CFG, now)
+    # originals moved out
+    assert list(day.glob("*.mp4")) == []
+    # landed in trash, structure preserved
+    trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
+    assert len(list(trash.glob("*.mp4"))) == 6
+    # manifest: 6 rows, one per file, all quarantined, shared segment_id
+    assert len(rows) == 6
+    assert all(r["status"] == "quarantined" for r in rows)
+    assert all(r["segment_id"] == "2026-05-08_00-00-00" for r in rows)
+    manifest = tmp_path / "@dcwb_trash" / "manifest.jsonl"
+    assert manifest.exists()
+    assert len([ln for ln in manifest.read_text().splitlines() if ln.strip()]) == 6
+
+
+def test_quarantine_leaves_sentryclips_untouched(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    # A *separate-time* Sentry event so it does not trigger the overlap guard
+    sev = tmp_path / "SentryClips" / "2026-05-09_12-00-00"
+    sev.mkdir(parents=True)
+    for cam in CAMERAS:
+        (sev / f"2026-05-09_12-00-00-{cam}.mp4").write_bytes(b"x")
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
+    quarantine(tmp_path, cands, DEFAULT_PRUNE_CFG, now)
+    assert len(list(sev.glob("*.mp4"))) == 6  # Sentry files all present
