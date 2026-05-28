@@ -53,7 +53,7 @@ CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を
 
 ### prune-recent（低モーション RecentClips の隔離）
 
-`prune_mod.find_candidates` が `front` カメラの間引きフレーム間差分スコアで低モーションセグメントを検出し、`@dcwb_trash/` へ隔離（`manifest.jsonl` で管理）する。デフォルトはドライラン。`--apply` で隔離実行と期限切れ削除、`--purge` で削除のみ、`--restore SEGMENT_ID|all` で復元。`min_age_hours`（既定 48h）以内の新しいセグメントと、SentryClips/SavedClips のイベント時間窓に重なるセグメントはスキップして保護する。パラメータは `pipeline.json` の `prune` セクション（`motion_threshold`, `frames_sampled`, `cameras_analyzed`, `min_age_hours`, `retention_days`, `trash_dir`）で調整可能。
+`prune_mod.find_candidates` が `front` カメラの間引きフレーム間差分スコアで低モーションセグメントを検出し、`@dcwb_trash/` へ隔離（`manifest.jsonl` で管理）する。デフォルトはドライラン。`--apply` で隔離実行と期限切れ削除、`--purge` で削除のみ、`--restore SEGMENT_ID|all` で復元。`min_age_hours`（既定 48h）以内の新しいセグメントと、セグメントのタイムスタンプが SentryClips/SavedClips のイベント時間窓に入るものはスキップして保護する。パラメータは `pipeline.json` の `prune` セクション（`motion_threshold`, `frames_sampled`, `cameras_analyzed`, `min_age_hours`, `retention_days`, `trash_dir`）で調整可能。
 
 ### 時刻・昼夜判定
 

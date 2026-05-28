@@ -100,6 +100,7 @@ dcwb prune-recent --source /Volumes/sentryusb --restore all
 
 - 直近 48 時間のクリップ、および SentryClips/SavedClips のイベント時間に重なるクリップは保護されます。
 - 隔離されたファイルは `@dcwb_trash/` に 14 日間保持され、`--apply` または `--purge` 実行時に期限切れ分が削除されます。
+- `--purge` 単体で、期限切れ trash の削除だけを実行することもできます（`--apply` 時は隔離後に自動で実行）。
 - 閾値・保持期間は `pipeline.json` の `prune` セクションで調整できます。
 
 ## 設定 (`pipeline.json`)
