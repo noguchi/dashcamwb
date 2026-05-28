@@ -23,3 +23,32 @@ def test_segments_for_day_groups_by_timestamp(tmp_path):
     assert segs[0].ts.tzinfo == JST
     # sorted ascending by time
     assert segs[0].ts_str == "2026-05-08_00-00-00"
+
+
+def test_compute_motion_score_static_below_threshold(tmp_path):
+    from dcwb.prune import compute_motion_score
+    clip = tmp_path / "2026-05-08_00-00-00-front.mp4"
+    make_clip(clip, (1.0, 1.0, 1.0), duration_sec=1.0)
+    assert compute_motion_score(clip, 8) < 2.0
+
+
+def test_compute_motion_score_motion_above_threshold(tmp_path):
+    from dcwb.prune import compute_motion_score
+    clip = tmp_path / "2026-05-08_00-00-00-front.mp4"
+    make_motion_clip(clip, duration_sec=1.0)
+    assert compute_motion_score(clip, 8) > 2.0
+
+
+def test_compute_motion_score_missing_clip_returns_inf(tmp_path):
+    from dcwb.prune import compute_motion_score
+    assert compute_motion_score(tmp_path / "nope.mp4", 8) == float("inf")
+
+
+def test_segment_motion_score_uses_analyzed_camera(tmp_path):
+    from dcwb.prune import _segments_for_day, segment_motion_score, DEFAULT_PRUNE_CFG
+    day = tmp_path / "2026-05-08"
+    day.mkdir(parents=True)
+    make_clip(day / "2026-05-08_00-00-00-front.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    make_clip(day / "2026-05-08_00-00-00-back.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    seg = _segments_for_day(day)[0]
+    assert segment_motion_score(seg, DEFAULT_PRUNE_CFG) < 2.0

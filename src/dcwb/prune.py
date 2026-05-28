@@ -51,3 +51,40 @@ def _segments_for_day(day_dir: Path) -> list[Segment]:
         segs.append(Segment(day_dir=day_dir, ts=ts, ts_str=ts_str, clips=sorted(clips)))
     segs.sort(key=lambda s: s.ts)
     return segs
+
+
+def compute_motion_score(clip: Path, frames_sampled: int) -> float:
+    """Max mean-abs luma diff between consecutive sampled frames (0-255 scale).
+
+    Returns inf when the clip cannot be analyzed, so it is never treated as
+    low-motion (fail-safe: never quarantine what we can't read).
+    """
+    try:
+        duration = probe_duration(clip)
+    except Exception:
+        return float("inf")
+    if frames_sampled < 2 or duration <= 0:
+        return float("inf")
+    times = [duration * (i + 0.5) / frames_sampled for i in range(frames_sampled)]
+    frames = extract_frames(clip, times)
+    if len(frames) < 2:
+        return float("inf")
+    grays = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_RGB2GRAY), (64, 64)) for f in frames]
+    diffs = [
+        float(np.abs(grays[i + 1].astype(np.int16) - grays[i].astype(np.int16)).mean())
+        for i in range(len(grays) - 1)
+    ]
+    return max(diffs) if diffs else float("inf")
+
+
+def segment_motion_score(segment: Segment, cfg: dict) -> float:
+    """Max motion score across the configured analyzed cameras for a segment."""
+    scores: list[float] = []
+    for cam in cfg["cameras_analyzed"]:
+        clip = next((c for c in segment.clips if c.name.endswith(f"-{cam}.mp4")), None)
+        if clip is None:
+            continue
+        scores.append(compute_motion_score(clip, cfg["frames_sampled"]))
+    if not scores:
+        return float("inf")
+    return max(scores)
