@@ -52,3 +52,15 @@ def test_segment_motion_score_uses_analyzed_camera(tmp_path):
     make_clip(day / "2026-05-08_00-00-00-back.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
     seg = _segments_for_day(day)[0]
     assert segment_motion_score(seg, DEFAULT_PRUNE_CFG) < 2.0
+
+
+def test_segment_motion_score_ignores_non_analyzed_camera(tmp_path):
+    from dcwb.prune import _segments_for_day, segment_motion_score, DEFAULT_PRUNE_CFG
+    day = tmp_path / "2026-05-08"
+    day.mkdir(parents=True)
+    # front is static (low motion); back has heavy motion but is NOT analyzed
+    make_clip(day / "2026-05-08_00-00-00-front.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    make_motion_clip(day / "2026-05-08_00-00-00-back.mp4", duration_sec=1.0)
+    seg = _segments_for_day(day)[0]
+    # cameras_analyzed == ["front"], so the motion on `back` must be ignored
+    assert segment_motion_score(seg, DEFAULT_PRUNE_CFG) < 2.0
