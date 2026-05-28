@@ -190,3 +190,31 @@ def test_quarantine_accumulates_manifest_across_calls(tmp_path):
     rows2 = quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
     assert len(rows2) == 6                              # only new rows returned
     assert len(_load_manifest(tmp_path / "@dcwb_trash")) == 12  # accumulated existing+new
+
+
+def test_purge_deletes_expired_quarantined(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, purge, _load_manifest, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0)
+    quarantine(tmp_path, cands, DEFAULT_PRUNE_CFG, t0)
+    n = purge(tmp_path, DEFAULT_PRUNE_CFG, now=t0 + timedelta(days=15))  # > 14d retention
+    assert n == 6
+    trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
+    assert list(trash.glob("*.mp4")) == []
+    rows = _load_manifest(tmp_path / "@dcwb_trash")
+    assert all(r["status"] == "purged" for r in rows)
+
+
+def test_purge_keeps_fresh_quarantined(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, purge, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0)
+    quarantine(tmp_path, cands, DEFAULT_PRUNE_CFG, t0)
+    n = purge(tmp_path, DEFAULT_PRUNE_CFG, now=t0 + timedelta(days=1))  # < 14d
+    assert n == 0
+    trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
+    assert len(list(trash.glob("*.mp4"))) == 6

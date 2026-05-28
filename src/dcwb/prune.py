@@ -182,3 +182,22 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
             })
     _write_manifest(trash_root, rows + new_rows)
     return new_rows
+
+
+def purge(usb_root: Path, cfg: dict, now: datetime) -> int:
+    """Delete trash files whose quarantine is older than retention_days."""
+    trash_root = usb_root / cfg["trash_dir"]
+    rows = _load_manifest(trash_root)
+    cutoff = now - timedelta(days=cfg["retention_days"])
+    purged = 0
+    for row in rows:
+        if row["status"] != "quarantined":
+            continue
+        if datetime.fromisoformat(row["quarantined_at"]) <= cutoff:
+            tp = usb_root / row["trash_path"]
+            if tp.exists():
+                tp.unlink()
+            row["status"] = "purged"
+            purged += 1
+    _write_manifest(trash_root, rows)
+    return purged
