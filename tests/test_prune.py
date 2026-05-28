@@ -308,7 +308,7 @@ def test_format_report_lists_candidates(tmp_path):
     cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
     report = format_report(cands)
     assert "2026-05-08_00-00-00" in report
-    assert "1 segment" in report
+    assert "1 segment(s)" in report
 
 
 def test_format_report_empty():

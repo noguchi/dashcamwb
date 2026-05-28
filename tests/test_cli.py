@@ -106,3 +106,43 @@ def test_cli_prune_recent_apply_quarantines(tmp_path):
     assert list(day.glob("*.mp4")) == []
     trash = usb / "@dcwb_trash" / "RecentClips" / "2020-01-01"
     assert len(list(trash.glob("*.mp4"))) == 6
+
+
+def test_cli_prune_recent_restore_with_apply_errors(tmp_path):
+    usb = tmp_path / "usb"
+    (usb / "RecentClips").mkdir(parents=True)
+    rc = main([
+        "prune-recent", "--source", str(usb),
+        "--pipeline-config", str(tmp_path / "absent.json"),
+        "--restore", "all", "--apply",
+    ])
+    assert rc == 1  # incompatible flags rejected, nothing mutated
+
+
+def test_cli_prune_recent_restore_roundtrip(tmp_path):
+    usb = tmp_path / "usb"
+    day = usb / "RecentClips" / "2020-01-01"
+    day.mkdir(parents=True)
+    for cam in CAMERAS:
+        make_clip(day / f"2020-01-01_00-00-00-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    cfg = str(tmp_path / "absent.json")
+    assert main(["prune-recent", "--source", str(usb), "--pipeline-config", cfg, "--apply"]) == 0
+    assert list(day.glob("*.mp4")) == []
+    assert main(["prune-recent", "--source", str(usb), "--pipeline-config", cfg, "--restore", "all"]) == 0
+    assert len(list(day.glob("*.mp4"))) == 6
+
+
+def test_cli_prune_recent_purge_standalone(tmp_path):
+    usb = tmp_path / "usb"
+    day = usb / "RecentClips" / "2020-01-01"
+    day.mkdir(parents=True)
+    for cam in CAMERAS:
+        make_clip(day / f"2020-01-01_00-00-00-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    cfg = str(tmp_path / "absent.json")
+    # quarantine with default 14d retention → fresh, not purged
+    assert main(["prune-recent", "--source", str(usb), "--pipeline-config", cfg, "--apply"]) == 0
+    trash = usb / "@dcwb_trash" / "RecentClips" / "2020-01-01"
+    assert len(list(trash.glob("*.mp4"))) == 6
+    # standalone purge with retention 0 → all expired → deleted
+    assert main(["prune-recent", "--source", str(usb), "--pipeline-config", cfg, "--purge", "--retention-days", "0"]) == 0
+    assert list(trash.glob("*.mp4")) == []

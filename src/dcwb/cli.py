@@ -60,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--source", type=Path, default=Path("/Volumes/sentryusb"))
     pp.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
     pp.add_argument("--apply", action="store_true", help="Quarantine candidates (then purge expired)")
-    pp.add_argument("--purge", action="store_true", help="Delete trash past the retention window")
+    pp.add_argument("--purge", action="store_true", help="Delete trash past the retention window (no extra effect when --apply is given)")
     pp.add_argument("--restore", metavar="SEGMENT_ID|all", help="Restore quarantined segment(s)")
     pp.add_argument("--retention-days", type=int, default=None, help="Override retention_days")
 
@@ -143,7 +143,10 @@ def _cmd_render_all(args) -> int:
             print(f"[render-all] FAILED {ev.name}: {e}", file=sys.stderr)
     return 0
 
-def _cmd_prune(args) -> int:
+def _cmd_prune_recent(args) -> int:
+    if args.restore and (args.apply or args.purge):
+        print("[prune] --restore cannot be combined with --apply/--purge", file=sys.stderr)
+        return 1
     usb_root = args.source.resolve()
     full = json.loads(args.pipeline_config.read_text()) if args.pipeline_config.exists() else {}
     cfg = {**prune_mod.DEFAULT_PRUNE_CFG, **full.get("prune", {})}
@@ -178,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         "verify": _cmd_verify,
         "render-all": _cmd_render_all,
         "serve": _cmd_serve,
-        "prune-recent": _cmd_prune,
+        "prune-recent": _cmd_prune_recent,
     }[args.cmd](args)
 
 if __name__ == "__main__":
