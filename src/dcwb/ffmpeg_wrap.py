@@ -33,7 +33,8 @@ def extract_frames(path: Path, times: list[float]) -> list[np.ndarray]:
     """Decode frames at the given timestamps (seconds) in one capture session.
 
     Returns RGB uint8 (H, W, 3) frames. Frames that fail to decode are skipped,
-    so the result may be shorter than `times`.
+    so the result may be shorter than `times`. The returned frame is the nearest
+    decodable frame to each `t` (seek accuracy depends on keyframe spacing).
     """
     cap = cv2.VideoCapture(str(path))
     out: list[np.ndarray] = []

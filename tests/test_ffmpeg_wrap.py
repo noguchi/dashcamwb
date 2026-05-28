@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from pathlib import Path
-from dcwb.ffmpeg_wrap import probe_duration, extract_frame, render_with_matrix
+from dcwb.ffmpeg_wrap import probe_duration, extract_frame, extract_frames, render_with_matrix
 from dcwb.matrix import from_diag
 from tests.fixtures.make_synthetic import make_clip, make_motion_clip
 
@@ -44,7 +44,6 @@ def test_render_with_red_attenuation_reduces_red(sample_clip, tmp_path):
 
 
 def test_extract_frames_returns_requested_count(tmp_path):
-    from dcwb.ffmpeg_wrap import extract_frames
     clip = tmp_path / "m.mp4"
     make_motion_clip(clip, duration_sec=2.0)
     frames = extract_frames(clip, [0.2, 0.6, 1.0, 1.4])
@@ -53,10 +52,10 @@ def test_extract_frames_returns_requested_count(tmp_path):
 
 
 def test_extract_frames_static_clip_frames_near_identical(tmp_path):
-    from dcwb.ffmpeg_wrap import extract_frames
     clip = tmp_path / "s.mp4"
     make_clip(clip, (1.0, 1.0, 1.0), duration_sec=2.0)
     frames = extract_frames(clip, [0.2, 0.6, 1.0])
     assert len(frames) == 3
-    d = np.abs(frames[0].astype(int) - frames[1].astype(int)).mean()
-    assert d < 2.0
+    for a, b in zip(frames, frames[1:]):
+        d = np.abs(a.astype(int) - b.astype(int)).mean()
+        assert d < 2.0
