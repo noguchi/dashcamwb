@@ -245,3 +245,31 @@ def test_purge_boundary_exactly_retention_days_purges(tmp_path):
     # exactly retention_days later → quarantined_at == cutoff → <= is inclusive → purged
     n = purge(tmp_path, DEFAULT_PRUNE_CFG, now=t0 + timedelta(days=14))
     assert n == 6
+
+
+def test_restore_moves_files_back(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, restore, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0)
+    quarantine(tmp_path, cands, DEFAULT_PRUNE_CFG, t0)
+    n = restore(tmp_path, DEFAULT_PRUNE_CFG, "2026-05-08_00-00-00")
+    assert n == 6
+    assert len(list(day.glob("*.mp4"))) == 6
+    trash = tmp_path / "@dcwb_trash" / "RecentClips" / "2026-05-08"
+    assert list(trash.glob("*.mp4")) == []
+
+
+def test_restore_skips_on_collision(tmp_path):
+    from dcwb.prune import find_candidates, quarantine, restore, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    t0 = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, t0)
+    quarantine(tmp_path, cands, DEFAULT_PRUNE_CFG, t0)
+    # recreate one original so restore must skip it
+    (day / "2026-05-08_00-00-00-front.mp4").write_bytes(b"collision")
+    n = restore(tmp_path, DEFAULT_PRUNE_CFG, "all")
+    assert n == 5  # 6 minus the colliding front
+    assert (day / "2026-05-08_00-00-00-front.mp4").read_bytes() == b"collision"

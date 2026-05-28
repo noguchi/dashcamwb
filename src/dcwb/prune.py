@@ -203,3 +203,30 @@ def purge(usb_root: Path, cfg: dict, now: datetime) -> int:
             purged += 1
     _write_manifest(trash_root, rows)
     return purged
+
+
+def restore(usb_root: Path, cfg: dict, segment_id: str) -> int:
+    """Move quarantined files back to their original paths.
+
+    `segment_id` selects one segment by its timestamp string, or "all".
+    Collisions (original already exists) are skipped with a warning.
+    """
+    trash_root = usb_root / cfg["trash_dir"]
+    rows = _load_manifest(trash_root)
+    restored = 0
+    for row in rows:
+        if row["status"] != "quarantined":
+            continue
+        if segment_id != "all" and row["segment_id"] != segment_id:
+            continue
+        orig = usb_root / row["original_path"]
+        tp = usb_root / row["trash_path"]
+        if orig.exists():
+            print(f"[prune] restore skip (exists): {row['original_path']}", file=sys.stderr)
+            continue
+        orig.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tp), str(orig))
+        row["status"] = "restored"
+        restored += 1
+    _write_manifest(trash_root, rows)
+    return restored
