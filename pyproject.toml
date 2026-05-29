@@ -35,6 +35,7 @@ dcwb = [
   "serve/templates/*.j2",
   "serve/static/*",
   "vendor/tesla_dashcam/*.proto",
+  "vendor/tesla_dashcam/NOTICE",
 ]
 
 [tool.pytest.ini_options]
