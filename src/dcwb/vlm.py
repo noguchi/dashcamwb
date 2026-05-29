@@ -60,6 +60,14 @@ class VlmConfig:
     interest_min: int = 1
     system_prompt: str | None = None
     use_json_schema: bool = True
+    # Sampling params sent in every request. LM Studio's UI sampling settings do
+    # NOT reach the OpenAI-compatible API, so these must be sent explicitly.
+    # max_tokens=300 truncated generation mid-stream and triggered repetition
+    # loops; a higher cap plus repeat_penalty lets the model stop naturally.
+    max_tokens: int = 768
+    temperature: float = 0.2
+    repeat_penalty: float = 1.3
+    frequency_penalty: float = 0.3
 
     @classmethod
     def from_dict(cls, data: dict | None) -> VlmConfig:
@@ -154,8 +162,10 @@ class VlmClient:
                 {"role": "system", "content": cfg.effective_system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            "temperature": 0.2,
-            "max_tokens": 300,
+            "temperature": cfg.temperature,
+            "max_tokens": cfg.max_tokens,
+            "repeat_penalty": cfg.repeat_penalty,
+            "frequency_penalty": cfg.frequency_penalty,
         }
         if cfg.use_json_schema:
             payload["response_format"] = {

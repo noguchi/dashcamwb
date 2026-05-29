@@ -150,3 +150,28 @@ def test_build_payload_omits_schema_when_disabled():
     payload = client.build_payload(["uri1"])
 
     assert "response_format" not in payload
+
+
+def test_build_payload_sends_sampling_params_from_config():
+    client = _client(
+        monkeypatch_chat=lambda p: "{}",
+        max_tokens=768, temperature=0.1, repeat_penalty=1.3, frequency_penalty=0.3,
+    )
+
+    payload = client.build_payload(["uri1"])
+
+    assert payload["max_tokens"] == 768
+    assert payload["temperature"] == 0.1
+    assert payload["repeat_penalty"] == 1.3
+    assert payload["frequency_penalty"] == 0.3
+
+
+def test_sampling_param_defaults_avoid_truncation_loops():
+    from dcwb.vlm import VlmConfig
+
+    cfg = VlmConfig.from_dict(None)
+
+    # 300 was the cap that truncated mid-generation and triggered repetition loops.
+    assert cfg.max_tokens >= 512
+    # A repeat penalty must be sent (LM Studio UI sampling does not reach the API).
+    assert cfg.repeat_penalty > 1.0
