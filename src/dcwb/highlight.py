@@ -34,6 +34,29 @@ class CandidateScore:
     components: dict[str, float]
 
 
+@dataclass(frozen=True)
+class Excerpt:
+    source: CandidateScore
+    ts_str: str
+    start_sec: float
+    duration_sec: float
+
+
+@dataclass(frozen=True)
+class StyleConfig:
+    name: str
+    excerpt_sec: float
+    min_sec: float
+    max_sec: float
+    target_sec: float
+
+
+STYLE_CONFIGS = {
+    "fast": StyleConfig("fast", excerpt_sec=12.0, min_sec=8.0, max_sec=15.0, target_sec=180.0),
+    "cruise": StyleConfig("cruise", excerpt_sec=45.0, min_sec=30.0, max_sec=60.0, target_sec=360.0),
+}
+
+
 def _clamp01(value: float) -> float:
     value = _finite_or_zero(value)
     return max(0.0, min(1.0, value))
@@ -99,6 +122,40 @@ def score_candidate(candidate: HighlightCandidate, visual: VisualFeatures) -> Ca
             "penalty": penalty,
         },
     )
+
+
+def plan_excerpts(
+    scores: list[CandidateScore],
+    style: str,
+    target_duration_sec: float | None = None,
+) -> list[Excerpt]:
+    if style not in STYLE_CONFIGS:
+        raise ValueError(f"unknown highlight style: {style}")
+    cfg = STYLE_CONFIGS[style]
+    target = target_duration_sec if target_duration_sec is not None else cfg.target_sec
+    selected: list[CandidateScore] = []
+    total = 0.0
+    for scored in sorted(scores, key=lambda s: s.total, reverse=True):
+        if scored.total <= 0:
+            continue
+        duration = min(cfg.max_sec, max(cfg.min_sec, min(cfg.excerpt_sec, scored.candidate.duration_sec)))
+        if total >= target:
+            break
+        selected.append(scored)
+        total += duration
+    excerpts: list[Excerpt] = []
+    for scored in sorted(selected, key=lambda s: s.candidate.ts_str):
+        duration = min(cfg.max_sec, max(cfg.min_sec, min(cfg.excerpt_sec, scored.candidate.duration_sec)))
+        start = max(0.0, (scored.candidate.duration_sec - duration) / 2.0)
+        excerpts.append(
+            Excerpt(
+                source=scored,
+                ts_str=scored.candidate.ts_str,
+                start_sec=start,
+                duration_sec=duration,
+            )
+        )
+    return excerpts
 
 
 def _timestamp_from_front_clip(clip: Path) -> str:

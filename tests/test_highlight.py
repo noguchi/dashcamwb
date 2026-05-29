@@ -141,3 +141,54 @@ def test_score_candidate_treats_non_finite_values_as_zero(tmp_path):
     assert score.components["brightness"] == 0.0
     assert score.components["low_confidence_penalty"] < 0.0
     assert 0.0 <= score.total <= 1.0
+
+
+def _scored_candidate(tmp_path, ts: str, score: float, duration: float = 60.0):
+    from dcwb.highlight import (
+        CandidateScore,
+        HighlightCandidate,
+        VisualFeatures,
+    )
+    clip = tmp_path / f"{ts}-front.mp4"
+    clip.write_bytes(b"not used")
+    candidate = HighlightCandidate(
+        clip=clip,
+        ts_str=ts,
+        duration_sec=duration,
+        telemetry=SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 12.0, 8.0, 4.0, 10),
+    )
+    return CandidateScore(
+        candidate=candidate,
+        visual=VisualFeatures(mean_luma=145.0, visual_change=10.0),
+        total=score,
+        components={"speed": score, "speed_delta": 0.0, "visual_change": 0.0, "brightness": 0.0, "penalty": 0.0},
+    )
+
+
+def test_plan_excerpts_fast_uses_shorter_windows_than_cruise(tmp_path):
+    from dcwb.highlight import plan_excerpts
+    scores = [
+        _scored_candidate(tmp_path, "2026-05-08_00-00-00", 0.9),
+        _scored_candidate(tmp_path, "2026-05-08_00-01-00", 0.8),
+    ]
+
+    fast = plan_excerpts(scores, "fast")
+    cruise = plan_excerpts(scores, "cruise")
+
+    assert fast
+    assert cruise
+    assert max(e.duration_sec for e in fast) <= 15.0
+    assert min(e.duration_sec for e in cruise) >= 30.0
+
+
+def test_plan_excerpts_preserves_chronological_order(tmp_path):
+    from dcwb.highlight import plan_excerpts
+    scores = [
+        _scored_candidate(tmp_path, "2026-05-08_00-02-00", 0.9),
+        _scored_candidate(tmp_path, "2026-05-08_00-00-00", 0.8),
+        _scored_candidate(tmp_path, "2026-05-08_00-01-00", 0.7),
+    ]
+
+    excerpts = plan_excerpts(scores, "fast", target_duration_sec=24)
+
+    assert [e.ts_str for e in excerpts] == sorted(e.ts_str for e in excerpts)
