@@ -3,9 +3,11 @@ import struct
 from dcwb.vendor.tesla_dashcam import dashcam_pb2
 
 
-def _sei_nal(gear: int, frame_seq: int) -> bytes:
+def _sei_nal(gear: int, frame_seq: int, speed: float = 0.0) -> bytes:
     """One AVCC-framed Tesla SEI NAL: len-prefix + 0x06 0x05 size 'BBBi' proto 0x80."""
-    proto = dashcam_pb2.SeiMetadata(version=1, gear_state=gear, frame_seq_no=frame_seq).SerializeToString()
+    proto = dashcam_pb2.SeiMetadata(
+        version=1, gear_state=gear, frame_seq_no=frame_seq, vehicle_speed_mps=speed
+    ).SerializeToString()
     body = b"\x06\x05" + bytes([len(proto) + 4]) + b"\x42\x42\x42\x69" + proto + b"\x80"
     return struct.pack(">I", len(body)) + body
 
@@ -68,3 +70,14 @@ def test_missing_file_returns_no_sei(tmp_path):
     tel = read_segment_telemetry(tmp_path / "nope.mp4")
     assert tel.has_sei is False
     assert tel.drove is False
+
+
+def test_max_speed_tracked(tmp_path):
+    from dcwb.telemetry import read_segment_telemetry
+    # two DRIVE frames at 5.0 and 12.5 m/s
+    ftyp = struct.pack(">I", 16) + b"ftypisom" + b"\x00\x00\x00\x00"
+    nals = _sei_nal(1, 0, 5.0) + _sei_nal(1, 1, 12.5)
+    mdat = struct.pack(">I", 8 + len(nals)) + b"mdat" + nals
+    clip = _write(tmp_path, "speed.mp4", ftyp + mdat)
+    tel = read_segment_telemetry(clip)
+    assert tel.max_speed_mps == 12.5

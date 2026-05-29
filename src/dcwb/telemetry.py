@@ -5,6 +5,7 @@ from pathlib import Path
 from dcwb.vendor.tesla_dashcam import sei_extractor as _sx
 
 # dashcam.proto: enum Gear { PARK=0; DRIVE=1; REVERSE=2; NEUTRAL=3; }
+# proto enum names are GEAR_*; we strip the prefix for compact output
 _GEAR_NAME = {0: "PARK", 1: "DRIVE", 2: "REVERSE", 3: "NEUTRAL"}
 
 
@@ -33,6 +34,8 @@ def read_segment_telemetry(front_clip: Path) -> SegmentTelemetry:
                 frames += 1
                 name = _GEAR_NAME.get(meta.gear_state, str(meta.gear_state))
                 counts[name] = counts.get(name, 0) + 1
+                # proto3 floats default to 0.0; a 0.0 frame and an unset frame are
+                # indistinguishable and both correctly leave max_speed unchanged
                 if meta.vehicle_speed_mps and meta.vehicle_speed_mps > max_speed:
                     max_speed = meta.vehicle_speed_mps
     except Exception:
