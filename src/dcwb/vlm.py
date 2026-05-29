@@ -9,12 +9,18 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
+
+# Captions are manifest-only. Keep them short: a long free-form caption gives the
+# model room to ramble into repetition / multilingual garbage. maxLength is also
+# put in the JSON schema so llama.cpp grammar caps generation at the source.
+CAPTION_MAX_LEN = 30
 
 DEFAULT_SYSTEM_PROMPT = (
     "あなたはドライブ記録のハイライト編集者です。与えられた前方カメラの数フレームを見て、"
     "後から見返して楽しいドライブ映像かどうかを評価します。流れる風景、特徴的な景観、"
     "変化のある街並み、トンネルや海沿いなどを高く評価し、単調・停止・真っ暗な映像は低く評価します。"
+    f"caption は{CAPTION_MAX_LEN}文字以内の短い日本語1フレーズにしてください。"
     "指定のJSON形式だけを返してください。"
 )
 
@@ -23,7 +29,7 @@ RESPONSE_SCHEMA = {
     "properties": {
         "interest": {"type": "integer", "minimum": 0, "maximum": 10},
         "scene_tags": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
-        "caption": {"type": "string"},
+        "caption": {"type": "string", "maxLength": CAPTION_MAX_LEN},
         "drive_quality": {
             "type": "string",
             "enum": ["flowing", "stop_and_go", "stopped"],
@@ -103,7 +109,8 @@ _USER_INSTRUCTION = (
 _JSON_HINT = (
     ' 次のJSONだけを返してください: '
     '{"interest": 0-10の整数, "scene_tags": [最大5個の短い語], '
-    '"caption": "日本語1文", "drive_quality": "flowing|stop_and_go|stopped"}'
+    f'"caption": "{CAPTION_MAX_LEN}文字以内の短い日本語1フレーズ", '
+    '"drive_quality": "flowing|stop_and_go|stopped"}'
 )
 
 
@@ -130,7 +137,7 @@ def _parse_description(content: str) -> ClipDescription | None:
     if not isinstance(tags, list):
         tags = []
     tags = [str(t) for t in tags][:5]
-    caption = str(data.get("caption") or "")
+    caption = str(data.get("caption") or "")[:CAPTION_MAX_LEN]
     dq = data.get("drive_quality")
     dq = dq if dq in _ALLOWED_DRIVE_QUALITY else ""
     return ClipDescription(

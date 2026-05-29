@@ -516,7 +516,7 @@ def test_highlight_day_ai_path_writes_manifest_with_ai_block(tmp_path, monkeypat
     assert result.output_path.exists()
     manifest = json.loads(result.manifest_path.read_text())
     assert manifest["ai_model"] == "qwen2.5-vl-7b-instruct"
-    assert manifest["prompt_version"] == "1"
+    assert manifest["prompt_version"] == "2"
     assert manifest["vlm_calls"] == 2
     clip0 = manifest["clips"][0]
     assert clip0["selection"] == "ai"

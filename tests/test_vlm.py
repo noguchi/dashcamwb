@@ -60,6 +60,29 @@ def test_parse_description_clamps_and_coerces_interest():
     assert as_str.interest == 8
 
 
+def test_parse_description_truncates_long_caption():
+    from dcwb.vlm import _parse_description, CAPTION_MAX_LEN
+
+    long_cap = "在庫" * 100
+    desc = _parse_description(
+        '{"interest": 4, "scene_tags": [], "caption": "' + long_cap + '", "drive_quality": "flowing"}'
+    )
+    assert len(desc.caption) <= CAPTION_MAX_LEN
+
+
+def test_response_schema_bounds_caption_length():
+    from dcwb.vlm import RESPONSE_SCHEMA, CAPTION_MAX_LEN
+
+    assert RESPONSE_SCHEMA["properties"]["caption"]["maxLength"] == CAPTION_MAX_LEN
+
+
+def test_prompt_version_bumped_for_short_caption_change():
+    from dcwb.vlm import PROMPT_VERSION
+
+    # Bumped so the cache invalidates and clips are re-fetched with short captions.
+    assert PROMPT_VERSION != "1"
+
+
 def _client(monkeypatch_chat=None, monkeypatch_ping=None, **cfg_kwargs):
     from dcwb.vlm import VlmClient, VlmConfig
     cfg = VlmConfig.from_dict(cfg_kwargs)
