@@ -115,12 +115,14 @@ def _overlaps(seg_start: datetime, seg_end: datetime, intervals: list[tuple[date
 def _classify(seg: Segment, cfg: dict) -> Candidate | None:
     """Gear-primary classification. None = protect (keep)."""
     if cfg.get("use_telemetry", True):
+        # front is the only camera whose stream carries Tesla SEI telemetry
         front = next((c for c in seg.clips if c.name.endswith("-front.mp4")), None)
         if front is not None:
             tel = read_segment_telemetry(front)
             if tel.has_sei:
                 if tel.drove:
                     return None  # real drive -> protect
+                # has_sei but no DRIVE/REVERSE (PARK or NEUTRAL only) => parked
                 return Candidate(segment=seg, score=0.0, reason="parked-sei",
                                  gear_counts=tel.gear_counts)
             # SEI absent -> ambiguous -> fall through to motion

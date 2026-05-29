@@ -383,6 +383,28 @@ def test_no_sei_falls_back_to_motion(tmp_path, monkeypatch):
     assert cands[0].reason == "low-motion"
 
 
+def test_use_telemetry_true_but_no_front_clip_uses_motion(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    # static segment for every camera EXCEPT front -> no SEI carrier present
+    for cam in CAMERAS:
+        if cam == "front":
+            continue
+        make_clip(day / f"2026-05-08_00-00-00-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    def _boom(f):
+        raise AssertionError("telemetry must not be read when no front clip exists")
+    monkeypatch.setattr(prune, "read_segment_telemetry", _boom)
+    # front is absent, so analyze `back` instead — otherwise segment_motion_score
+    # returns inf (no analyzed camera present) and the segment is not a candidate
+    cfg = {**DEFAULT_PRUNE_CFG, "cameras_analyzed": ["back"]}
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, cfg, now)
+    assert len(cands) == 1
+    assert cands[0].reason == "low-motion"
+
+
 def test_use_telemetry_false_ignores_gear(tmp_path, monkeypatch):
     from dcwb import prune
     from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
