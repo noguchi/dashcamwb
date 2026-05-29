@@ -12,6 +12,7 @@ import numpy as np
 from dcwb.calibrate import JST
 from dcwb.ffmpeg_wrap import concat_clips, cut_clip, extract_frames, probe_duration
 from dcwb.telemetry import SegmentTelemetry, read_segment_telemetry
+from dcwb.vlm import PROMPT_VERSION, ClipDescription, VlmConfig, encode_frame
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,129 @@ STYLE_CONFIGS = {
     "fast": StyleConfig("fast", excerpt_sec=12.0, min_sec=8.0, max_sec=15.0, target_sec=180.0),
     "cruise": StyleConfig("cruise", excerpt_sec=45.0, min_sec=30.0, max_sec=60.0, target_sec=360.0),
 }
+
+
+@dataclass(frozen=True)
+class AiScore:
+    candidate: HighlightCandidate
+    total: float
+    description: ClipDescription
+    cached: bool
+
+
+@dataclass(frozen=True)
+class AiScoring:
+    scores: list[AiScore]
+    calls: int
+    cache_hits: int
+
+
+def _frame_fractions(n: int) -> list[float]:
+    if n <= 1:
+        return [0.5]
+    return [0.1 + 0.8 * i / (n - 1) for i in range(n)]
+
+
+def _sample_frames_b64(clip: Path, duration_sec: float, cfg: VlmConfig) -> list[str]:
+    if duration_sec <= 0:
+        return []
+    n = max(1, cfg.frames_per_clip)
+    times = [duration_sec * f for f in _frame_fractions(n)]
+    frames = extract_frames(clip, times)
+    return [encode_frame(f, cfg.frame_max_edge) for f in frames]
+
+
+def _cache_key(clip: Path) -> str:
+    return f"{clip.name}:{clip.stat().st_mtime_ns}"
+
+
+def load_vlm_cache(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def save_vlm_cache(path: Path, cache: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, ensure_ascii=False, indent=2))
+
+
+_STOPPED_PENALTY = 0.3
+
+
+def _interest_to_total(desc: ClipDescription) -> float:
+    base = _clamp01((desc.interest or 0) / 10.0)
+    if desc.drive_quality == "stopped":
+        base = _clamp01(base - _STOPPED_PENALTY)
+    return base
+
+
+def describe_candidates(
+    candidates: list[HighlightCandidate],
+    vlm_client,
+    source_root: Path,
+    cache_path: Path,
+    use_cache: bool = True,
+    skips: list[dict] | None = None,
+) -> AiScoring:
+    cfg = vlm_client.config
+    cache = load_vlm_cache(cache_path) if use_cache else {}
+    calls = 0
+    cache_hits = 0
+    scores: list[AiScore] = []
+
+    def record_skip(clip: Path, reason: str) -> None:
+        if skips is None:
+            return
+        try:
+            src = clip.relative_to(source_root).as_posix()
+        except ValueError:
+            src = clip.as_posix()
+        skips.append({"source_clip": src, "reason": reason})
+
+    for cand in candidates:
+        key = _cache_key(cand.clip)
+        entry = cache.get(key) if use_cache else None
+        if entry and entry.get("model") == cfg.model and entry.get("prompt_version") == PROMPT_VERSION:
+            desc = ClipDescription(
+                interest=entry.get("interest"),
+                scene_tags=list(entry.get("scene_tags") or []),
+                caption=entry.get("caption", ""),
+                drive_quality=entry.get("drive_quality", ""),
+            )
+            cache_hits += 1
+            cached = True
+        else:
+            frames = _sample_frames_b64(cand.clip, cand.duration_sec, cfg)
+            if not frames:
+                record_skip(cand.clip, "no-frames")
+                continue
+            desc = vlm_client.describe(frames)
+            calls += 1
+            cached = False
+            if not desc.parse_failed and desc.interest is not None:
+                cache[key] = {
+                    "interest": desc.interest,
+                    "scene_tags": desc.scene_tags,
+                    "caption": desc.caption,
+                    "drive_quality": desc.drive_quality,
+                    "model": cfg.model,
+                    "prompt_version": PROMPT_VERSION,
+                }
+        if desc.parse_failed or desc.interest is None:
+            record_skip(cand.clip, "vlm-parse-failed")
+            continue
+        if desc.interest < cfg.interest_min:
+            record_skip(cand.clip, "interest-below-min")
+            continue
+        scores.append(AiScore(candidate=cand, total=_interest_to_total(desc), description=desc, cached=cached))
+
+    if use_cache:
+        save_vlm_cache(cache_path, cache)
+    return AiScoring(scores=scores, calls=calls, cache_hits=cache_hits)
 
 
 def _excerpt_duration(candidate_duration: float, cfg: StyleConfig) -> float:

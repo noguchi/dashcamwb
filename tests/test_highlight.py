@@ -272,3 +272,107 @@ def test_highlight_day_no_eligible_clips_writes_empty_manifest(tmp_path, monkeyp
     manifest = json.loads(result.manifest_path.read_text())
     assert manifest["clips"] == []
     assert manifest["skips"][0]["reason"] == "no-sei"
+
+
+class _FakeVlmClient:
+    """Returns canned ClipDescriptions keyed by clip filename; counts calls."""
+
+    def __init__(self, by_name, config):
+        self.by_name = by_name
+        self.config = config
+        self.calls = 0
+        self._next_name = ""
+
+    def health_check(self):
+        return None
+
+    def describe(self, frames_b64):
+        self.calls += 1
+        return self.by_name[self._next_name]
+
+
+def _ai_config(**kwargs):
+    from dcwb.vlm import VlmConfig
+    return VlmConfig.from_dict({"frames_per_clip": 2, "frame_max_edge": 64, **kwargs})
+
+
+def test_describe_candidates_scores_by_interest_and_caches(tmp_path, monkeypatch):
+    from dcwb import highlight
+    from dcwb.highlight import HighlightCandidate, describe_candidates
+    from dcwb.vlm import ClipDescription
+
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    from tests.fixtures.make_synthetic import make_motion_clip
+    clip_hi = day / "2026-05-08_00-00-00-front.mp4"
+    clip_lo = day / "2026-05-08_00-01-00-front.mp4"
+    make_motion_clip(clip_hi, duration_sec=1.0)
+    make_motion_clip(clip_lo, duration_sec=1.0)
+    cands = [
+        HighlightCandidate(clip_hi, "2026-05-08_00-00-00", 1.0, SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 12.0, 8.0, 3.0, 10)),
+        HighlightCandidate(clip_lo, "2026-05-08_00-01-00", 1.0, SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 12.0, 8.0, 3.0, 10)),
+    ]
+    descs = {
+        clip_hi.name: ClipDescription(9, ["海沿い"], "海沿いを流す", "flowing"),
+        clip_lo.name: ClipDescription(2, ["渋滞"], "渋滞", "stop_and_go"),
+    }
+
+    client = _FakeVlmClient({}, _ai_config())
+    real_sample = highlight._sample_frames_b64
+    def tracking_sample(clip, duration, cfg):
+        client._next_name = clip.name
+        client.by_name = descs
+        return real_sample(clip, duration, cfg)
+    monkeypatch.setattr(highlight, "_sample_frames_b64", tracking_sample)
+
+    cache_path = tmp_path / "vlm-cache.json"
+    skips = []
+    result = describe_candidates(cands, client, source_root=tmp_path, cache_path=cache_path, use_cache=True, skips=skips)
+
+    assert result.calls == 2
+    assert [s.candidate.clip.name for s in sorted(result.scores, key=lambda s: s.total, reverse=True)][0] == clip_hi.name
+    assert cache_path.exists()
+
+    client2 = _FakeVlmClient(descs, _ai_config())
+    monkeypatch.setattr(highlight, "_sample_frames_b64", tracking_sample)
+    result2 = describe_candidates(cands, client2, source_root=tmp_path, cache_path=cache_path, use_cache=True, skips=[])
+    assert client2.calls == 0
+    assert result2.cache_hits == 2
+
+
+def test_describe_candidates_records_skips(tmp_path, monkeypatch):
+    from dcwb import highlight
+    from dcwb.highlight import HighlightCandidate, describe_candidates
+    from dcwb.vlm import ClipDescription
+
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    from tests.fixtures.make_synthetic import make_motion_clip
+    bad = day / "2026-05-08_00-00-00-front.mp4"
+    low = day / "2026-05-08_00-01-00-front.mp4"
+    make_motion_clip(bad, duration_sec=1.0)
+    make_motion_clip(low, duration_sec=1.0)
+    cands = [
+        HighlightCandidate(bad, "2026-05-08_00-00-00", 1.0, SegmentTelemetry(True, 1, {"DRIVE": 1}, True, 1.0, 1.0, 0.0, 1)),
+        HighlightCandidate(low, "2026-05-08_00-01-00", 1.0, SegmentTelemetry(True, 1, {"DRIVE": 1}, True, 1.0, 1.0, 0.0, 1)),
+    ]
+    descs = {
+        bad.name: ClipDescription(None, [], "", "", parse_failed=True),
+        low.name: ClipDescription(0, [], "暗い", "stopped"),
+    }
+    client = _FakeVlmClient({}, _ai_config(interest_min=1))
+    # stub sampling to return a dummy frame list and route describe() to this clip
+    def sample_stub(clip, duration, cfg):
+        client._next_name = clip.name
+        client.by_name = descs
+        return ["uri"]
+    monkeypatch.setattr(highlight, "_sample_frames_b64", sample_stub)
+
+    skips = []
+    result = describe_candidates(cands, client, source_root=tmp_path, cache_path=tmp_path / "c.json", use_cache=False, skips=skips)
+
+    assert result.scores == []
+    assert not (tmp_path / "c.json").exists()
+    reasons = {s["reason"] for s in skips}
+    assert "vlm-parse-failed" in reasons
+    assert "interest-below-min" in reasons
