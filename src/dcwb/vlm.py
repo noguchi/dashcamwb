@@ -66,8 +66,8 @@ class VlmConfig:
     # loops; a higher cap plus repeat_penalty lets the model stop naturally.
     max_tokens: int = 768
     temperature: float = 0.2
-    repeat_penalty: float = 1.3
-    frequency_penalty: float = 0.3
+    repeat_penalty: float = 1.4
+    frequency_penalty: float = 0.5
 
     @classmethod
     def from_dict(cls, data: dict | None) -> VlmConfig:
