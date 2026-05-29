@@ -87,3 +87,23 @@ def test_concat_clips_writes_playable_video(tmp_path):
 
     assert out.exists()
     assert probe_duration(out) >= 1.5
+
+
+def test_resolve_encoder_falls_back_when_requested_unavailable(monkeypatch):
+    from dcwb import ffmpeg_wrap
+    monkeypatch.setattr(ffmpeg_wrap, "_available_encoders", lambda: frozenset({"libx264"}))
+    assert ffmpeg_wrap.resolve_encoder("h264_videotoolbox") == "libx264"
+
+
+def test_resolve_encoder_keeps_requested_when_available(monkeypatch):
+    from dcwb import ffmpeg_wrap
+    monkeypatch.setattr(
+        ffmpeg_wrap, "_available_encoders", lambda: frozenset({"h264_videotoolbox", "libx264"})
+    )
+    assert ffmpeg_wrap.resolve_encoder("h264_videotoolbox") == "h264_videotoolbox"
+
+
+def test_resolve_encoder_keeps_request_when_probe_empty(monkeypatch):
+    from dcwb import ffmpeg_wrap
+    monkeypatch.setattr(ffmpeg_wrap, "_available_encoders", lambda: frozenset())
+    assert ffmpeg_wrap.resolve_encoder("h264_videotoolbox") == "h264_videotoolbox"

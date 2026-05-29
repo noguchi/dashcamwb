@@ -21,7 +21,7 @@ uv run --extra dev pytest tests/test_render.py::test_name  # 1 ケース
 uv run dcwb render <event_dir>
 ```
 
-テストは合成 mp4 を **`libx264`** で生成・レンダーするため ffmpeg に libx264 が要る。実利用のデフォルトエンコーダは Apple Silicon の `h264_videotoolbox`（`--encoder` で切替）。
+テストは合成 mp4 を **`libx264`** で生成・レンダーするため ffmpeg に libx264 が要る。実利用のデフォルトエンコーダは Apple Silicon の `h264_videotoolbox`（`--encoder` で切替）。ただし `ffmpeg_wrap.resolve_encoder` が起動時に `ffmpeg -encoders` を調べ、要求エンコーダが無い環境（Linux など）では自動で `libx264` にフォールバックする（警告を stderr に出す）。`render`/`render-all`/`verify`/`highlight-day` すべてに効く。
 
 CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を公開）:
 `calibrate` / `render <event_dir>` / `verify <event_dir>` / `render-all --source <dir>` / `serve` / `prune-recent` / `highlight-day`。

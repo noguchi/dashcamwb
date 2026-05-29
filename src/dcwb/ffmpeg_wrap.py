@@ -1,11 +1,54 @@
 from __future__ import annotations
+import functools
 import json
+import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import numpy as np
 import cv2
 from dcwb.matrix import Matrix3x3
+
+_ENCODER_LINE = re.compile(r"^\s[A-Z.]{6}\s+(\S+)")
+
+
+@functools.lru_cache(maxsize=1)
+def _available_encoders() -> frozenset[str]:
+    """Names of video/audio encoders this ffmpeg build exposes.
+
+    Returns an empty set if ffmpeg is missing or the probe fails, so callers
+    treat "unknown" as "don't second-guess the requested encoder".
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return frozenset()
+    names = {m.group(1) for line in result.stdout.splitlines()
+             if (m := _ENCODER_LINE.match(line))}
+    return frozenset(names)
+
+
+def resolve_encoder(encoder: str, fallback: str = "libx264") -> str:
+    """Return a usable encoder, falling back to libx264 off Apple Silicon.
+
+    The project default is h264_videotoolbox (Apple Silicon). On other
+    platforms that encoder is absent, so substitute `fallback` with a warning.
+    If the probe is empty (ffmpeg missing/old) keep the request unchanged.
+    """
+    available = _available_encoders()
+    if not available or encoder in available:
+        return encoder
+    if fallback in available:
+        print(
+            f"[ffmpeg] encoder '{encoder}' unavailable; falling back to '{fallback}'",
+            file=sys.stderr,
+        )
+        return fallback
+    return encoder
 
 def probe_duration(path: Path) -> float:
     """Return clip duration in seconds via ffprobe."""
@@ -63,6 +106,7 @@ def render_with_matrix(
     """
     if matrix.shape != (3, 3):
         raise ValueError(f"expected 3x3 matrix, got {matrix.shape}")
+    encoder = resolve_encoder(encoder)
     m = matrix
     cm = (
         f"colorchannelmixer="
@@ -112,6 +156,7 @@ def cut_clip(
     encoder: str = "h264_videotoolbox",
     bitrate_kbps: int = 12000,
 ) -> None:
+    encoder = resolve_encoder(encoder)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     cmd = [
@@ -139,6 +184,7 @@ def concat_clips(
 ) -> None:
     if not clips:
         raise ValueError("concat_clips requires at least one clip")
+    encoder = resolve_encoder(encoder)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fp:
