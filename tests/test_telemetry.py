@@ -1,5 +1,8 @@
 from __future__ import annotations
 import struct
+
+import pytest
+
 from dcwb.vendor.tesla_dashcam import dashcam_pb2
 
 
@@ -81,3 +84,18 @@ def test_max_speed_tracked(tmp_path):
     clip = _write(tmp_path, "speed.mp4", ftyp + mdat)
     tel = read_segment_telemetry(clip)
     assert tel.max_speed_mps == 12.5
+
+
+def test_speed_summary_fields(tmp_path):
+    from dcwb.telemetry import read_segment_telemetry
+    ftyp = struct.pack(">I", 16) + b"ftypisom" + b"\x00\x00\x00\x00"
+    nals = _sei_nal(1, 0, 2.0) + _sei_nal(1, 1, 8.0) + _sei_nal(1, 2, 5.0)
+    mdat = struct.pack(">I", 8 + len(nals)) + b"mdat" + nals
+    clip = _write(tmp_path, "speed-summary.mp4", ftyp + mdat)
+
+    tel = read_segment_telemetry(clip)
+
+    assert tel.speed_sample_count == 3
+    assert tel.avg_speed_mps == pytest.approx(5.0)
+    assert tel.speed_delta_mps == pytest.approx(6.0)
+    assert tel.max_speed_mps == pytest.approx(8.0)
