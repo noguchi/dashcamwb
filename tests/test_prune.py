@@ -340,3 +340,59 @@ def test_overlap_guard_allows_segment_with_gap_before_event(tmp_path):
         (sev / f"2026-05-08_00-05-00-{cam}.mp4").write_bytes(b"")
     now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
     assert len(find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)) == 1
+
+
+def test_telemetry_drove_protects_static_segment(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    from dcwb.telemetry import SegmentTelemetry
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")  # low pixel motion
+    monkeypatch.setattr(prune, "read_segment_telemetry",
+                        lambda f: SegmentTelemetry(True, 100, {"DRIVE": 100}, True, 12.0))
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    assert find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now) == []
+
+
+def test_telemetry_parked_sei_is_candidate(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    from dcwb.telemetry import SegmentTelemetry
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    monkeypatch.setattr(prune, "read_segment_telemetry",
+                        lambda f: SegmentTelemetry(True, 100, {"PARK": 100}, False, 0.0))
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
+    assert len(cands) == 1
+    assert cands[0].reason == "parked-sei"
+    assert cands[0].gear_counts == {"PARK": 100}
+
+
+def test_no_sei_falls_back_to_motion(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    from dcwb.telemetry import SegmentTelemetry
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")  # low motion -> candidate
+    monkeypatch.setattr(prune, "read_segment_telemetry",
+                        lambda f: SegmentTelemetry(False, 0, {}, False, 0.0))
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now)
+    assert len(cands) == 1
+    assert cands[0].reason == "low-motion"
+
+
+def test_use_telemetry_false_ignores_gear(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, DEFAULT_PRUNE_CFG
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    def _boom(f):
+        raise AssertionError("telemetry must not be read when use_telemetry is false")
+    monkeypatch.setattr(prune, "read_segment_telemetry", _boom)
+    cfg = {**DEFAULT_PRUNE_CFG, "use_telemetry": False}
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    cands = find_candidates(tmp_path, cfg, now)
+    assert len(cands) == 1
+    assert cands[0].reason == "low-motion"

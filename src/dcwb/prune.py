@@ -13,6 +13,7 @@ import numpy as np
 from dcwb.calibrate import JST
 from dcwb.ffmpeg_wrap import probe_duration, extract_frames
 from dcwb.serve.index import scan_sources, _CAM_SUFFIX_RE
+from dcwb.telemetry import read_segment_telemetry
 
 DEFAULT_PRUNE_CFG = {
     "motion_threshold": 2.0,
@@ -21,6 +22,7 @@ DEFAULT_PRUNE_CFG = {
     "min_age_hours": 48,
     "retention_days": 14,
     "trash_dir": "@dcwb_trash",
+    "use_telemetry": True,
 }
 
 SEGMENT_SPAN = timedelta(minutes=1)  # Tesla RecentClips segment ≈ 1 minute of footage
@@ -38,6 +40,8 @@ class Segment:
 class Candidate:
     segment: Segment
     score: float
+    reason: str = "low-motion"
+    gear_counts: dict | None = None
 
 
 def _segments_for_day(day_dir: Path) -> list[Segment]:
@@ -108,6 +112,24 @@ def _overlaps(seg_start: datetime, seg_end: datetime, intervals: list[tuple[date
     return any(start <= seg_end and seg_start <= end for start, end in intervals)
 
 
+def _classify(seg: Segment, cfg: dict) -> Candidate | None:
+    """Gear-primary classification. None = protect (keep)."""
+    if cfg.get("use_telemetry", True):
+        front = next((c for c in seg.clips if c.name.endswith("-front.mp4")), None)
+        if front is not None:
+            tel = read_segment_telemetry(front)
+            if tel.has_sei:
+                if tel.drove:
+                    return None  # real drive -> protect
+                return Candidate(segment=seg, score=0.0, reason="parked-sei",
+                                 gear_counts=tel.gear_counts)
+            # SEI absent -> ambiguous -> fall through to motion
+    score = segment_motion_score(seg, cfg)
+    if score < cfg["motion_threshold"]:
+        return Candidate(segment=seg, score=score, reason="low-motion")
+    return None
+
+
 def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]:
     """Low-motion RecentClips segments that pass the min-age and overlap guards."""
     if now.tzinfo is None:
@@ -124,11 +146,11 @@ def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]
         for seg in _segments_for_day(day_dir):
             if seg.ts > cutoff:            # too new — protect the live buffer
                 continue
-            if _overlaps(seg.ts, seg.ts + SEGMENT_SPAN, intervals):  # segment window overlaps a flagged event
+            if _overlaps(seg.ts, seg.ts + SEGMENT_SPAN, intervals):  # overlaps a flagged event
                 continue
-            score = segment_motion_score(seg, cfg)
-            if score < cfg["motion_threshold"]:
-                out.append(Candidate(segment=seg, score=score))
+            cand = _classify(seg, cfg)
+            if cand is not None:
+                out.append(cand)
     return out
 
 
