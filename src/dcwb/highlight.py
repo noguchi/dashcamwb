@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import json
 import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from dcwb.ffmpeg_wrap import extract_frames, probe_duration
+from dcwb.calibrate import JST
+from dcwb.ffmpeg_wrap import concat_clips, cut_clip, extract_frames, probe_duration
 from dcwb.telemetry import SegmentTelemetry, read_segment_telemetry
 
 
@@ -221,3 +224,108 @@ def build_candidates(
             )
         )
     return candidates
+
+
+@dataclass(frozen=True)
+class HighlightResult:
+    output_path: Path
+    manifest_path: Path
+    excerpt_paths: list[Path]
+    excerpt_count: int
+
+
+def score_candidates(candidates: list[HighlightCandidate]) -> list[CandidateScore]:
+    scores: list[CandidateScore] = []
+    for candidate in candidates:
+        visual = extract_visual_features(candidate.clip, candidate.duration_sec)
+        scores.append(score_candidate(candidate, visual))
+    return scores
+
+
+def _manifest_clip(excerpt: Excerpt, source_root: Path, rendered_path: Path) -> dict:
+    scored = excerpt.source
+    candidate = scored.candidate
+    tel = candidate.telemetry
+    return {
+        "source_clip": candidate.clip.relative_to(source_root).as_posix(),
+        "rendered_clip": rendered_path.name,
+        "start_sec": round(excerpt.start_sec, 3),
+        "duration_sec": round(excerpt.duration_sec, 3),
+        "score": round(scored.total, 4),
+        "scores": {key: round(value, 4) for key, value in scored.components.items()},
+        "visual": {
+            "mean_luma": round(scored.visual.mean_luma, 4),
+            "visual_change": round(scored.visual.visual_change, 4),
+        },
+        "telemetry": {
+            "has_sei": tel.has_sei,
+            "gear_counts": tel.gear_counts,
+            "max_speed_mps": round(tel.max_speed_mps, 4),
+            "avg_speed_mps": round(tel.avg_speed_mps, 4),
+            "speed_delta_mps": round(tel.speed_delta_mps, 4),
+        },
+        "low_confidence": candidate.low_confidence,
+    }
+
+
+def highlight_day(
+    source_root: Path,
+    date: str,
+    out_root: Path,
+    style: str = "fast",
+    allow_no_sei: bool = False,
+    encoder: str = "h264_videotoolbox",
+    bitrate_kbps: int = 12000,
+    target_duration_sec: float | None = None,
+) -> HighlightResult:
+    clips = discover_day_front_clips(source_root, date)
+    skips: list[dict] = []
+    candidates = build_candidates(clips, allow_no_sei=allow_no_sei, skips=skips)
+    day_out = out_root / date
+    clip_out = day_out / "clips"
+    day_out.mkdir(parents=True, exist_ok=True)
+    manifest_path = day_out / f"highlight-{style}.json"
+    output_path = day_out / f"highlight-{style}.mp4"
+    if not candidates:
+        manifest = {
+            "date": date,
+            "style": style,
+            "source": str(source_root),
+            "created_at": datetime.now(JST).isoformat(),
+            "target_duration_sec": target_duration_sec or STYLE_CONFIGS[style].target_sec,
+            "output": output_path.name,
+            "clips": [],
+            "skips": skips or [{"reason": "no eligible driving front clips"}],
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        return HighlightResult(output_path, manifest_path, [], 0)
+    scores = score_candidates(candidates)
+    excerpts = plan_excerpts(scores, style, target_duration_sec=target_duration_sec)
+    rendered: list[Path] = []
+    manifest_clips: list[dict] = []
+    for idx, excerpt in enumerate(excerpts, start=1):
+        rendered_path = clip_out / f"{idx:03d}-{excerpt.ts_str}.mp4"
+        cut_clip(
+            excerpt.source.candidate.clip,
+            rendered_path,
+            excerpt.start_sec,
+            excerpt.duration_sec,
+            encoder=encoder,
+            bitrate_kbps=bitrate_kbps,
+        )
+        rendered.append(rendered_path)
+        manifest_clips.append(_manifest_clip(excerpt, source_root, rendered_path))
+    if rendered:
+        concat_clips(rendered, output_path, encoder=encoder, bitrate_kbps=bitrate_kbps)
+    manifest = {
+        "date": date,
+        "style": style,
+        "source": str(source_root),
+        "created_at": datetime.now(JST).isoformat(),
+        "target_duration_sec": target_duration_sec or STYLE_CONFIGS[style].target_sec,
+        "output": output_path.name,
+        "clips": manifest_clips,
+        "skips": skips,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    return HighlightResult(output_path, manifest_path, rendered, len(rendered))

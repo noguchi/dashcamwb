@@ -203,3 +203,72 @@ def test_plan_excerpts_never_exceeds_source_duration(tmp_path):
     assert len(excerpts) == 1
     assert excerpts[0].duration_sec == 5.0
     assert excerpts[0].start_sec == 0.0
+
+
+def test_highlight_day_writes_video_and_manifest(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    for idx in range(2):
+        make_motion_clip(day / f"2026-05-08_00-0{idx}-00-front.mp4", duration_sec=2.0)
+    monkeypatch.setattr(
+        highlight,
+        "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+
+    result = highlight_day(
+        source_root=source,
+        date="2026-05-08",
+        out_root=tmp_path / "highlights",
+        style="fast",
+        allow_no_sei=False,
+        encoder="libx264",
+        bitrate_kbps=1000,
+        target_duration_sec=1.0,
+    )
+
+    assert result.output_path.exists()
+    assert result.manifest_path.exists()
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["date"] == "2026-05-08"
+    assert manifest["style"] == "fast"
+    assert manifest["clips"]
+    assert manifest["clips"][0]["scores"]
+
+
+def test_highlight_day_no_eligible_clips_writes_empty_manifest(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    make_clip(day / "2026-05-08_00-00-00-front.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    monkeypatch.setattr(
+        highlight,
+        "read_segment_telemetry",
+        lambda p: SegmentTelemetry(False, 0, {}, False, 0.0),
+    )
+
+    result = highlight_day(
+        source_root=source,
+        date="2026-05-08",
+        out_root=tmp_path / "highlights",
+        style="fast",
+        allow_no_sei=False,
+        encoder="libx264",
+        bitrate_kbps=1000,
+    )
+
+    assert result.excerpt_count == 0
+    assert not result.output_path.exists()
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["clips"] == []
+    assert manifest["skips"][0]["reason"] == "no-sei"
