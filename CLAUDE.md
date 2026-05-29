@@ -24,7 +24,9 @@ uv run dcwb render <event_dir>
 テストは合成 mp4 を **`libx264`** で生成・レンダーするため ffmpeg に libx264 が要る。実利用のデフォルトエンコーダは Apple Silicon の `h264_videotoolbox`（`--encoder` で切替）。
 
 CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を公開）:
-`calibrate` / `render <event_dir>` / `verify <event_dir>` / `render-all --source <dir>` / `serve` / `prune-recent`。
+`calibrate` / `render <event_dir>` / `verify <event_dir>` / `render-all --source <dir>` / `serve` / `prune-recent` / `highlight-day`。
+
+`highlight-day` は `RecentClips/<date>` の `front` カメラだけからドライブ記録向けハイライトを作る。MVP は AI なしで、SEI テレメトリの DRIVE/REVERSE、平均速度、速度変化、OpenCV の明るさ・画面変化量をスコア化し、`fast` と `cruise` の2スタイルで excerpt を選ぶ。出力 manifest には採用理由とスコア内訳を必ず残す。
 
 ## アーキテクチャ
 
