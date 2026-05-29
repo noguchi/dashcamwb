@@ -107,6 +107,20 @@ uv run dcwb prune-recent --source /Volumes/sentryusb --restore all
 - 閾値・保持期間は `pipeline.json` の `prune` セクションで調整できます。
 - **走行判定**: 既定（`use_telemetry: true`）では、Tesla が各 mp4 に埋め込む SEI テレメトリの `gear_state` を読み、DRIVE/REVERSE を含むセグメントは「走行」として保護します。SEI が無いセグメント（駐車中や旧 firmware）は従来どおり front カメラのモーションスコアで判定します。`pipeline.json` の `prune.use_telemetry` を `false` にすると純モーション動作に戻ります。
 
+## ドライブ・ハイライト（日別）
+
+`RecentClips/<date>` から front カメラのみのハイライト動画を作れます。危険検出ではなく、見返して楽しいドライブ記録向けです。
+
+```bash
+# テンポ重視: 短い切り出しを多めにつなぐ
+uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style fast
+
+# ドライブ感重視: 長めの区間を少なめにつなぐ
+uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style cruise
+```
+
+出力は `highlights/<date>/highlight-<style>.mp4` と `highlight-<style>.json` です。初期版は Tesla SEI テレメトリで DRIVE/REVERSE が確認できた front クリップだけを対象にし、速度・速度変化・画面変化・明るさからスコアを付けます。SEI が無いクリップも含めたい場合は `--allow-no-sei` を指定できますが、manifest では低信頼として記録されます。
+
 ## 設定 (`pipeline.json`)
 
 リポジトリ同梱のデフォルトは以下です。CLI の `--pipeline-config` で差し替え可能。

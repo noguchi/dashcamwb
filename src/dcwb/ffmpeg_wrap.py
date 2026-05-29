@@ -1,10 +1,53 @@
 from __future__ import annotations
+import functools
 import json
+import re
 import subprocess
+import sys
 from pathlib import Path
 import numpy as np
 import cv2
 from dcwb.matrix import Matrix3x3
+
+_ENCODER_LINE = re.compile(r"^\s[A-Z.]{6}\s+(\S+)")
+
+
+@functools.lru_cache(maxsize=1)
+def _available_encoders() -> frozenset[str]:
+    """Names of video/audio encoders this ffmpeg build exposes.
+
+    Returns an empty set if ffmpeg is missing or the probe fails, so callers
+    treat "unknown" as "don't second-guess the requested encoder".
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return frozenset()
+    names = {m.group(1) for line in result.stdout.splitlines()
+             if (m := _ENCODER_LINE.match(line))}
+    return frozenset(names)
+
+
+def resolve_encoder(encoder: str, fallback: str = "libx264") -> str:
+    """Return a usable encoder, falling back to libx264 off Apple Silicon.
+
+    The project default is h264_videotoolbox (Apple Silicon). On other
+    platforms that encoder is absent, so substitute `fallback` with a warning.
+    If the probe is empty (ffmpeg missing/old) keep the request unchanged.
+    """
+    available = _available_encoders()
+    if not available or encoder in available:
+        return encoder
+    if fallback in available:
+        print(
+            f"[ffmpeg] encoder '{encoder}' unavailable; falling back to '{fallback}'",
+            file=sys.stderr,
+        )
+        return fallback
+    return encoder
 
 def probe_duration(path: Path) -> float:
     """Return clip duration in seconds via ffprobe."""
@@ -62,6 +105,7 @@ def render_with_matrix(
     """
     if matrix.shape != (3, 3):
         raise ValueError(f"expected 3x3 matrix, got {matrix.shape}")
+    encoder = resolve_encoder(encoder)
     m = matrix
     cm = (
         f"colorchannelmixer="
@@ -90,3 +134,77 @@ def render_with_matrix(
         raise RuntimeError(
             f"ffmpeg failed: {e.stderr.decode('utf-8', errors='replace')[:500]}"
         ) from e
+
+
+def _run_ffmpeg(cmd: list[str], tmp: Path) -> None:
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        if tmp.exists():
+            tmp.unlink()
+        raise RuntimeError(
+            f"ffmpeg failed: {e.stderr.decode('utf-8', errors='replace')[:500]}"
+        ) from e
+
+
+def cut_clip(
+    src: Path,
+    dst: Path,
+    start_sec: float,
+    duration_sec: float,
+    encoder: str = "h264_videotoolbox",
+    bitrate_kbps: int = 12000,
+) -> None:
+    encoder = resolve_encoder(encoder)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{start_sec:.3f}",
+        "-i", str(src),
+        "-t", f"{duration_sec:.3f}",
+        "-an",
+        "-c:v", encoder,
+        "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        str(tmp),
+    ]
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)
+
+
+def concat_clips(
+    clips: list[Path],
+    dst: Path,
+    encoder: str = "h264_videotoolbox",
+    bitrate_kbps: int = 12000,
+) -> None:
+    if not clips:
+        raise ValueError("concat_clips requires at least one clip")
+    encoder = resolve_encoder(encoder)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    # Use the concat *filter*, not the concat demuxer. Real Tesla front clips are
+    # VFR and end up with mismatched per-clip timescales (e.g. 18432 vs 7170000);
+    # the demuxer can't reconcile those when re-encoding and smears the output PTS
+    # into a multi-hour file. The filter regenerates a single uniform timeline.
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for clip in clips:
+        cmd += ["-i", str(clip)]
+    streams = "".join(f"[{i}:v]" for i in range(len(clips)))
+    cmd += [
+        "-filter_complex", f"{streams}concat=n={len(clips)}:v=1:a=0[outv]",
+        "-map", "[outv]",
+        "-an",
+        "-c:v", encoder,
+        "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p",
+        "-fps_mode", "cfr",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        str(tmp),
+    ]
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)

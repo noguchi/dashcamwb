@@ -181,3 +181,56 @@ def test_cli_prune_recent_purge_standalone(tmp_path):
     # standalone purge with retention 0 → all expired → deleted
     assert main(["prune-recent", "--source", str(usb), "--pipeline-config", cfg, "--purge", "--retention-days", "0"]) == 0
     assert list(trash.glob("*.mp4")) == []
+
+
+def test_cli_highlight_day_invokes_highlight_day(tmp_path, monkeypatch, capsys):
+    from dataclasses import dataclass
+
+    captured = {}
+
+    @dataclass
+    class FakeResult:
+        output_path: Path
+        manifest_path: Path
+        excerpt_paths: list[Path]
+        excerpt_count: int
+
+    def fake_highlight_day(**kw):
+        captured.update(kw)
+        out = tmp_path / "highlight-fast.mp4"
+        manifest = tmp_path / "highlight-fast.json"
+        return FakeResult(out, manifest, [], 0)
+
+    monkeypatch.setattr("dcwb.cli.highlight_day", fake_highlight_day)
+
+    rc = main([
+        "highlight-day",
+        "--source", str(tmp_path / "usb"),
+        "--date", "2026-05-08",
+        "--out-root", str(tmp_path / "highlights"),
+        "--style", "fast",
+        "--allow-no-sei",
+        "--encoder", "libx264",
+        "--bitrate-kbps", "1000",
+    ])
+
+    assert rc == 0
+    assert captured["source_root"] == (tmp_path / "usb").resolve()
+    assert captured["date"] == "2026-05-08"
+    assert captured["style"] == "fast"
+    assert captured["allow_no_sei"] is True
+    assert captured["encoder"] == "libx264"
+    assert captured["bitrate_kbps"] == 1000
+    assert "no eligible clips" in capsys.readouterr().err
+
+
+def test_cli_highlight_day_missing_day_returns_error(tmp_path, monkeypatch, capsys):
+    def fake_highlight_day(**kw):
+        raise FileNotFoundError("missing RecentClips/2026-05-08")
+
+    monkeypatch.setattr("dcwb.cli.highlight_day", fake_highlight_day)
+
+    rc = main(["highlight-day", "--source", str(tmp_path), "--date", "2026-05-08"])
+
+    assert rc == 1
+    assert "missing RecentClips/2026-05-08" in capsys.readouterr().err

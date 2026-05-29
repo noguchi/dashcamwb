@@ -16,6 +16,9 @@ class SegmentTelemetry:
     gear_counts: dict[str, int]
     drove: bool
     max_speed_mps: float
+    avg_speed_mps: float = 0.0
+    speed_delta_mps: float = 0.0
+    speed_sample_count: int = 0
 
 
 def read_segment_telemetry(front_clip: Path) -> SegmentTelemetry:
@@ -27,6 +30,9 @@ def read_segment_telemetry(front_clip: Path) -> SegmentTelemetry:
     counts: dict[str, int] = {}
     frames = 0
     max_speed = 0.0
+    speed_sum = 0.0
+    speed_count = 0
+    min_speed: float | None = None
     try:
         with open(front_clip, "rb") as fp:
             offset, size = _sx.find_mdat(fp)
@@ -34,11 +40,15 @@ def read_segment_telemetry(front_clip: Path) -> SegmentTelemetry:
                 frames += 1
                 name = _GEAR_NAME.get(meta.gear_state, str(meta.gear_state))
                 counts[name] = counts.get(name, 0) + 1
-                # proto3 floats default to 0.0; a 0.0 frame and an unset frame are
-                # indistinguishable and both correctly leave max_speed unchanged
-                if meta.vehicle_speed_mps and meta.vehicle_speed_mps > max_speed:
-                    max_speed = meta.vehicle_speed_mps
+                speed = float(meta.vehicle_speed_mps or 0.0)
+                speed_sum += speed
+                speed_count += 1
+                max_speed = max(max_speed, speed)
+                min_speed = speed if min_speed is None else min(min_speed, speed)
     except Exception:
         return SegmentTelemetry(False, 0, {}, False, 0.0)
     drove = counts.get("DRIVE", 0) > 0 or counts.get("REVERSE", 0) > 0
-    return SegmentTelemetry(frames > 0, frames, counts, drove, max_speed)
+    avg_speed = speed_sum / speed_count if speed_count else 0.0
+    speed_delta = max_speed - (min_speed if min_speed is not None else max_speed)
+    return SegmentTelemetry(frames > 0, frames, counts, drove, max_speed,
+                            avg_speed, speed_delta, speed_count)

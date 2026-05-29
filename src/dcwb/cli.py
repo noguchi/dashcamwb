@@ -8,6 +8,7 @@ from dcwb.calibrate import calibrate_camera, JST
 from dcwb.render import render_event, CAMERAS
 from dcwb.verify import generate_verify_report
 from dcwb import prune as prune_mod
+from dcwb.highlight import highlight_day
 
 DEFAULT_PROFILES_DIR = Path("profiles")
 DEFAULT_OUT_ROOT = Path("/Users/noguchi/AI/dashcamwb/corrected")
@@ -63,6 +64,15 @@ def _build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--purge", action="store_true", help="Delete trash past the retention window (no extra effect when --apply is given)")
     pp.add_argument("--restore", metavar="SEGMENT_ID|all", help="Restore quarantined segment(s)")
     pp.add_argument("--retention-days", type=int, default=None, help="Override retention_days")
+
+    ph = sub.add_parser("highlight-day", help="Create a daily front-camera drive highlight")
+    ph.add_argument("--source", type=Path, default=Path("/Volumes/sentryusb"))
+    ph.add_argument("--date", required=True, help="RecentClips date directory, e.g. 2026-05-08")
+    ph.add_argument("--out-root", type=Path, default=Path("highlights"))
+    ph.add_argument("--style", choices=("fast", "cruise"), default="fast")
+    ph.add_argument("--allow-no-sei", action="store_true")
+    ph.add_argument("--encoder", default="h264_videotoolbox")
+    ph.add_argument("--bitrate-kbps", type=int, default=12000)
 
     return p
 
@@ -202,6 +212,29 @@ def _cmd_prune_recent(args) -> int:
     return 0
 
 
+def _cmd_highlight_day(args) -> int:
+    try:
+        result = highlight_day(
+            source_root=args.source.resolve(),
+            date=args.date,
+            out_root=args.out_root.resolve(),
+            style=args.style,
+            allow_no_sei=args.allow_no_sei,
+            encoder=args.encoder,
+            bitrate_kbps=args.bitrate_kbps,
+        )
+    except FileNotFoundError as e:
+        print(f"[highlight] {e}", file=sys.stderr)
+        return 1
+    if result.excerpt_count == 0:
+        print("[highlight] no eligible clips; wrote manifest only", file=sys.stderr)
+        print(f"[highlight] manifest {result.manifest_path}", file=sys.stderr)
+        return 0
+    print(f"[highlight] wrote {result.output_path}", file=sys.stderr)
+    print(f"[highlight] manifest {result.manifest_path}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -212,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         "render-all": _cmd_render_all,
         "serve": _cmd_serve,
         "prune-recent": _cmd_prune_recent,
+        "highlight-day": _cmd_highlight_day,
     }[args.cmd](args)
 
 if __name__ == "__main__":
