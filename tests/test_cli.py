@@ -185,6 +185,7 @@ def test_cli_prune_recent_purge_standalone(tmp_path):
 
 def test_cli_highlight_day_invokes_highlight_day(tmp_path, monkeypatch, capsys):
     from dataclasses import dataclass
+    from dcwb import cli
 
     captured = {}
 
@@ -201,6 +202,11 @@ def test_cli_highlight_day_invokes_highlight_day(tmp_path, monkeypatch, capsys):
         manifest = tmp_path / "highlight-fast.json"
         return FakeResult(out, manifest, [], 0)
 
+    class LiveClient:
+        def __init__(self, config): self.config = config
+        def health_check(self): return None
+
+    monkeypatch.setattr(cli, "VlmClient", LiveClient)
     monkeypatch.setattr("dcwb.cli.highlight_day", fake_highlight_day)
 
     rc = main([
@@ -225,12 +231,96 @@ def test_cli_highlight_day_invokes_highlight_day(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_highlight_day_missing_day_returns_error(tmp_path, monkeypatch, capsys):
+    from dcwb import cli
+
     def fake_highlight_day(**kw):
         raise FileNotFoundError("missing RecentClips/2026-05-08")
 
+    class LiveClient:
+        def __init__(self, config): self.config = config
+        def health_check(self): return None
+
+    monkeypatch.setattr(cli, "VlmClient", LiveClient)
     monkeypatch.setattr("dcwb.cli.highlight_day", fake_highlight_day)
 
     rc = main(["highlight-day", "--source", str(tmp_path), "--date", "2026-05-08"])
 
     assert rc == 1
     assert "missing RecentClips/2026-05-08" in capsys.readouterr().err
+
+
+def test_highlight_day_hard_errors_when_vlm_unavailable(tmp_path, monkeypatch, capsys):
+    from dcwb import cli
+    from dcwb.vlm import VlmUnavailableError
+
+    class DeadClient:
+        def __init__(self, config): self.config = config
+        def health_check(self): raise VlmUnavailableError("refused")
+
+    called = {"n": 0}
+    def fake_highlight_day(**kwargs):
+        called["n"] += 1
+    monkeypatch.setattr(cli, "VlmClient", DeadClient)
+    monkeypatch.setattr(cli, "highlight_day", fake_highlight_day)
+
+    rc = cli.main([
+        "highlight-day", "--source", str(tmp_path), "--date", "2026-05-08",
+        "--out-root", str(tmp_path / "out"), "--pipeline-config", str(tmp_path / "missing.json"),
+    ])
+
+    assert rc == 1
+    assert called["n"] == 0
+    assert "VLM unavailable" in capsys.readouterr().err
+
+
+def test_highlight_day_falls_back_with_allow_no_ai(tmp_path, monkeypatch):
+    from dcwb import cli
+    from dcwb.vlm import VlmUnavailableError
+    from dcwb.highlight import HighlightResult
+
+    class DeadClient:
+        def __init__(self, config): self.config = config
+        def health_check(self): raise VlmUnavailableError("refused")
+
+    captured = {}
+    def fake_highlight_day(**kwargs):
+        captured.update(kwargs)
+        return HighlightResult(tmp_path / "h.mp4", tmp_path / "h.json", [tmp_path / "h.mp4"], 1)
+    monkeypatch.setattr(cli, "VlmClient", DeadClient)
+    monkeypatch.setattr(cli, "highlight_day", fake_highlight_day)
+
+    rc = cli.main([
+        "highlight-day", "--source", str(tmp_path), "--date", "2026-05-08",
+        "--out-root", str(tmp_path / "out"), "--allow-no-ai",
+        "--pipeline-config", str(tmp_path / "missing.json"),
+    ])
+
+    assert rc == 0
+    assert captured["vlm_client"] is None
+    assert captured["selection"] == "mvp-fallback"
+
+
+def test_highlight_day_passes_client_when_healthy(tmp_path, monkeypatch):
+    from dcwb import cli
+    from dcwb.highlight import HighlightResult
+
+    class LiveClient:
+        def __init__(self, config): self.config = config
+        def health_check(self): return None
+
+    captured = {}
+    def fake_highlight_day(**kwargs):
+        captured.update(kwargs)
+        return HighlightResult(tmp_path / "h.mp4", tmp_path / "h.json", [tmp_path / "h.mp4"], 1)
+    monkeypatch.setattr(cli, "VlmClient", LiveClient)
+    monkeypatch.setattr(cli, "highlight_day", fake_highlight_day)
+
+    rc = cli.main([
+        "highlight-day", "--source", str(tmp_path), "--date", "2026-05-08",
+        "--out-root", str(tmp_path / "out"), "--vlm-model", "custom-vlm",
+        "--pipeline-config", str(tmp_path / "missing.json"),
+    ])
+
+    assert rc == 0
+    assert isinstance(captured["vlm_client"], LiveClient)
+    assert captured["vlm_client"].config.model == "custom-vlm"

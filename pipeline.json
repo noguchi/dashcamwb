@@ -17,5 +17,17 @@
     "retention_days": 14,
     "trash_dir": "@dcwb_trash",
     "use_telemetry": true
+  },
+  "highlight_ai": {
+    "endpoint": "http://galleria.local:1234/v1",
+    "model": "google/gemma-4-26b-a4b",
+    "api_key": "lm-studio",
+    "frames_per_clip": 3,
+    "frame_max_edge": 512,
+    "timeout_sec": 120,
+    "max_retries": 1,
+    "interest_min": 1,
+    "system_prompt": null,
+    "use_json_schema": true
   }
 }

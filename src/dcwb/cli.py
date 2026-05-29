@@ -2,6 +2,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from dcwb.calibrate import calibrate_camera, JST
@@ -9,6 +10,7 @@ from dcwb.render import render_event, CAMERAS
 from dcwb.verify import generate_verify_report
 from dcwb import prune as prune_mod
 from dcwb.highlight import highlight_day
+from dcwb.vlm import VlmClient, VlmConfig, VlmUnavailableError
 
 DEFAULT_PROFILES_DIR = Path("profiles")
 DEFAULT_OUT_ROOT = Path("/Users/noguchi/AI/dashcamwb/corrected")
@@ -73,6 +75,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--allow-no-sei", action="store_true")
     ph.add_argument("--encoder", default="h264_videotoolbox")
     ph.add_argument("--bitrate-kbps", type=int, default=12000)
+    ph.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
+    ph.add_argument("--vlm-endpoint", default=None, help="Override highlight_ai.endpoint")
+    ph.add_argument("--vlm-model", default=None, help="Override highlight_ai.model")
+    ph.add_argument("--allow-no-ai", action="store_true", help="Fall back to the MVP scorer if the VLM is unavailable")
+    ph.add_argument("--no-vlm-cache", action="store_true", help="Ignore and overwrite the per-day VLM cache")
 
     return p
 
@@ -213,6 +220,29 @@ def _cmd_prune_recent(args) -> int:
 
 
 def _cmd_highlight_day(args) -> int:
+    cfg_all = (
+        json.loads(args.pipeline_config.read_text())
+        if args.pipeline_config.exists()
+        else {}
+    )
+    vlm_cfg = VlmConfig.from_dict(cfg_all.get("highlight_ai"))
+    if args.vlm_endpoint:
+        vlm_cfg = replace(vlm_cfg, endpoint=args.vlm_endpoint)
+    if args.vlm_model:
+        vlm_cfg = replace(vlm_cfg, model=args.vlm_model)
+
+    client = VlmClient(vlm_cfg)
+    selection = "mvp"
+    try:
+        client.health_check()
+    except VlmUnavailableError as e:
+        if not args.allow_no_ai:
+            print(f"[highlight] VLM unavailable: {e}; pass --allow-no-ai to use the MVP scorer", file=sys.stderr)
+            return 1
+        print(f"[highlight] VLM unavailable: {e}; falling back to MVP scorer", file=sys.stderr)
+        client = None
+        selection = "mvp-fallback"
+
     try:
         result = highlight_day(
             source_root=args.source.resolve(),
@@ -222,6 +252,9 @@ def _cmd_highlight_day(args) -> int:
             allow_no_sei=args.allow_no_sei,
             encoder=args.encoder,
             bitrate_kbps=args.bitrate_kbps,
+            vlm_client=client,
+            use_cache=not args.no_vlm_cache,
+            selection=selection,
         )
     except FileNotFoundError as e:
         print(f"[highlight] {e}", file=sys.stderr)
