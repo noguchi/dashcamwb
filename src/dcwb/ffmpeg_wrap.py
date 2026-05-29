@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 import numpy as np
 import cv2
@@ -90,3 +91,75 @@ def render_with_matrix(
         raise RuntimeError(
             f"ffmpeg failed: {e.stderr.decode('utf-8', errors='replace')[:500]}"
         ) from e
+
+
+def _run_ffmpeg(cmd: list[str], tmp: Path) -> None:
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        if tmp.exists():
+            tmp.unlink()
+        raise RuntimeError(
+            f"ffmpeg failed: {e.stderr.decode('utf-8', errors='replace')[:500]}"
+        ) from e
+
+
+def cut_clip(
+    src: Path,
+    dst: Path,
+    start_sec: float,
+    duration_sec: float,
+    encoder: str = "h264_videotoolbox",
+    bitrate_kbps: int = 12000,
+) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{start_sec:.3f}",
+        "-i", str(src),
+        "-t", f"{duration_sec:.3f}",
+        "-an",
+        "-c:v", encoder,
+        "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        str(tmp),
+    ]
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)
+
+
+def concat_clips(
+    clips: list[Path],
+    dst: Path,
+    encoder: str = "h264_videotoolbox",
+    bitrate_kbps: int = 12000,
+) -> None:
+    if not clips:
+        raise ValueError("concat_clips requires at least one clip")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fp:
+        list_path = Path(fp.name)
+        for clip in clips:
+            fp.write(f"file '{clip.resolve().as_posix()}'\n")
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(list_path),
+        "-an",
+        "-c:v", encoder,
+        "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        str(tmp),
+    ]
+    try:
+        _run_ffmpeg(cmd, tmp)
+        tmp.replace(dst)
+    finally:
+        list_path.unlink(missing_ok=True)

@@ -59,3 +59,31 @@ def test_extract_frames_static_clip_frames_near_identical(tmp_path):
     for a, b in zip(frames, frames[1:]):
         d = np.abs(a.astype(int) - b.astype(int)).mean()
         assert d < 2.0
+
+
+def test_cut_clip_writes_playable_excerpt(tmp_path):
+    from dcwb.ffmpeg_wrap import cut_clip, probe_duration
+    from tests.fixtures.make_synthetic import make_motion_clip
+    src = tmp_path / "src.mp4"
+    dst = tmp_path / "cut.mp4"
+    make_motion_clip(src, duration_sec=2.0)
+
+    cut_clip(src, dst, start_sec=0.25, duration_sec=0.75, encoder="libx264", bitrate_kbps=1000)
+
+    assert dst.exists()
+    assert 0.4 <= probe_duration(dst) <= 1.2
+
+
+def test_concat_clips_writes_playable_video(tmp_path):
+    from dcwb.ffmpeg_wrap import concat_clips, probe_duration
+    from tests.fixtures.make_synthetic import make_motion_clip
+    first = tmp_path / "first.mp4"
+    second = tmp_path / "second.mp4"
+    out = tmp_path / "joined.mp4"
+    make_motion_clip(first, duration_sec=1.0)
+    make_motion_clip(second, duration_sec=1.0)
+
+    concat_clips([first, second], out, encoder="libx264", bitrate_kbps=1000)
+
+    assert out.exists()
+    assert probe_duration(out) >= 1.5
