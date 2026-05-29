@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from dcwb.ffmpeg_wrap import probe_duration
+import cv2
+import numpy as np
+
+from dcwb.ffmpeg_wrap import extract_frames, probe_duration
 from dcwb.telemetry import SegmentTelemetry, read_segment_telemetry
 
 
@@ -14,6 +17,75 @@ class HighlightCandidate:
     duration_sec: float
     telemetry: SegmentTelemetry
     low_confidence: bool = False
+
+
+@dataclass(frozen=True)
+class VisualFeatures:
+    mean_luma: float
+    visual_change: float
+
+
+@dataclass(frozen=True)
+class CandidateScore:
+    candidate: HighlightCandidate
+    visual: VisualFeatures
+    total: float
+    components: dict[str, float]
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def extract_visual_features(clip: Path, duration_sec: float, samples: int = 8) -> VisualFeatures:
+    if duration_sec <= 0 or samples < 2:
+        return VisualFeatures(mean_luma=0.0, visual_change=0.0)
+    times = [duration_sec * (i + 0.5) / samples for i in range(samples)]
+    frames = extract_frames(clip, times)
+    if not frames:
+        return VisualFeatures(mean_luma=0.0, visual_change=0.0)
+    grays = [
+        cv2.resize(cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY), (64, 64))
+        for frame in frames
+    ]
+    mean_luma = float(np.mean([g.mean() for g in grays]))
+    diffs = [
+        float(np.abs(grays[i + 1].astype(np.int16) - grays[i].astype(np.int16)).mean())
+        for i in range(len(grays) - 1)
+    ]
+    visual_change = float(np.mean(diffs)) if diffs else 0.0
+    return VisualFeatures(mean_luma=mean_luma, visual_change=visual_change)
+
+
+def score_candidate(candidate: HighlightCandidate, visual: VisualFeatures) -> CandidateScore:
+    tel = candidate.telemetry
+    speed = _clamp01(tel.avg_speed_mps / 22.0)
+    speed_delta = _clamp01(tel.speed_delta_mps / 8.0)
+    visual_change = _clamp01(visual.visual_change / 20.0)
+    brightness = _clamp01(1.0 - abs(visual.mean_luma - 145.0) / 145.0)
+    still_penalty = -0.25 if tel.avg_speed_mps < 1.0 and visual.visual_change < 1.0 else 0.0
+    dark_penalty = -0.25 * _clamp01((45.0 - visual.mean_luma) / 45.0)
+    low_confidence_penalty = -0.20 if candidate.low_confidence else 0.0
+    penalty = still_penalty + dark_penalty + low_confidence_penalty
+    total = _clamp01(
+        0.35 * speed
+        + 0.25 * speed_delta
+        + 0.25 * visual_change
+        + 0.15 * brightness
+        + penalty
+    )
+    return CandidateScore(
+        candidate=candidate,
+        visual=visual,
+        total=total,
+        components={
+            "speed": speed,
+            "speed_delta": speed_delta,
+            "visual_change": visual_change,
+            "brightness": brightness,
+            "penalty": penalty,
+        },
+    )
 
 
 def _timestamp_from_front_clip(clip: Path) -> str:

@@ -65,3 +65,48 @@ def test_build_candidates_includes_driving_sei_clip(tmp_path, monkeypatch):
     assert len(candidates) == 1
     assert candidates[0].clip == clip
     assert candidates[0].telemetry.avg_speed_mps == 8.0
+
+
+def test_extract_visual_features_distinguishes_motion_from_static(tmp_path):
+    from dcwb.highlight import extract_visual_features
+    from tests.fixtures.make_synthetic import make_motion_clip
+    static = tmp_path / "static.mp4"
+    motion = tmp_path / "motion.mp4"
+    make_clip(static, (1.0, 1.0, 1.0), duration_sec=1.0)
+    make_motion_clip(motion, duration_sec=1.0)
+
+    static_features = extract_visual_features(static, duration_sec=1.0)
+    motion_features = extract_visual_features(motion, duration_sec=1.0)
+
+    assert motion_features.visual_change > static_features.visual_change
+    assert static_features.mean_luma > 0.0
+
+
+def test_score_candidate_prefers_moving_bright_changing_clip(tmp_path):
+    from dcwb.highlight import (
+        HighlightCandidate,
+        VisualFeatures,
+        score_candidate,
+    )
+    clip = tmp_path / "2026-05-08_00-00-00-front.mp4"
+    clip.write_bytes(b"not used")
+    moving = HighlightCandidate(
+        clip=clip,
+        ts_str="2026-05-08_00-00-00",
+        duration_sec=60.0,
+        telemetry=SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 22.0, 16.0, 8.0, 10),
+    )
+    stopped = HighlightCandidate(
+        clip=clip,
+        ts_str="2026-05-08_00-01-00",
+        duration_sec=60.0,
+        telemetry=SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 0.5, 0.2, 0.1, 10),
+    )
+
+    moving_score = score_candidate(moving, VisualFeatures(mean_luma=145.0, visual_change=24.0))
+    stopped_score = score_candidate(stopped, VisualFeatures(mean_luma=20.0, visual_change=0.2))
+
+    assert moving_score.total > stopped_score.total
+    assert moving_score.components["speed"] > stopped_score.components["speed"]
+    assert moving_score.components["visual_change"] > stopped_score.components["visual_change"]
+    assert stopped_score.components["penalty"] < 0.0
