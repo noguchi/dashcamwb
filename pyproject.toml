@@ -16,7 +16,7 @@ dependencies = [
 dev = [
   "pytest>=8.0",
   "pytest-mock>=3.12",
-  "grpcio-tools>=1.60",
+  "grpcio-tools>=1.63",
 ]
 
 [project.scripts]

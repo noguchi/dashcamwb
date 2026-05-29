@@ -68,7 +68,7 @@ dev = [
 requires-dist = [
     { name = "astral", specifier = ">=3.2" },
     { name = "flask", specifier = ">=3.0" },
-    { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.60" },
+    { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.63" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", specifier = ">=4.9" },

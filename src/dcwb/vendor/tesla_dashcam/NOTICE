@@ -1,7 +1,9 @@
 Vendored from https://github.com/teslamotors/dashcam
+Upstream commit: f3a7e59 (master branch as of 2026-05-29).
 Files: dashcam.proto, sei_extractor.py (the `import dashcam_pb2` line was changed
 to `from . import dashcam_pb2` for packaging). dashcam_pb2.py is generated from
-dashcam.proto via grpcio-tools' protoc.
+dashcam.proto via grpcio-tools' protoc (grpcio-tools 1.80.0 / libprotoc 31.1,
+i.e. protoc 6.31.1).
 
 These files implement parsing of the SEI (Supplemental Enhancement Information)
 telemetry that Tesla embeds in dashcam mp4 video streams (firmware 2025.44.25+,
