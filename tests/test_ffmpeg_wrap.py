@@ -107,3 +107,21 @@ def test_resolve_encoder_keeps_request_when_probe_empty(monkeypatch):
     from dcwb import ffmpeg_wrap
     monkeypatch.setattr(ffmpeg_wrap, "_available_encoders", lambda: frozenset())
     assert ffmpeg_wrap.resolve_encoder("h264_videotoolbox") == "h264_videotoolbox"
+
+
+def test_concat_clips_mismatched_timescales_preserves_total_duration(tmp_path):
+    """Real Tesla front clips have per-clip timescales (e.g. 18432 vs 7170000).
+    Concatenating mismatched segments via the concat demuxer corrupts PTS and
+    produces a multi-hour file; concat_clips must yield ~sum-of-durations."""
+    from dcwb.ffmpeg_wrap import concat_clips, probe_duration
+    from tests.fixtures.make_synthetic import make_motion_clip
+    a = tmp_path / "a.mp4"
+    b = tmp_path / "b.mp4"
+    out = tmp_path / "joined.mp4"
+    make_motion_clip(a, duration_sec=2.0, fps=36, timescale=18432)
+    make_motion_clip(b, duration_sec=2.0, fps=36, timescale=7170000)
+
+    concat_clips([a, b], out, encoder="libx264", bitrate_kbps=1000)
+
+    assert out.exists()
+    assert 3.5 <= probe_duration(out) <= 4.5

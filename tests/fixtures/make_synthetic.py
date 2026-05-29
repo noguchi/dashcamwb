@@ -70,15 +70,25 @@ def make_motion_clip(
     duration_sec: float = 3.0,
     width: int = 320,
     height: int = 240,
+    fps: int = 30,
+    timescale: int | None = None,
 ) -> None:
-    """Generate an mp4 with strong frame-to-frame motion (animated testsrc2)."""
+    """Generate an mp4 with strong frame-to-frame motion (animated testsrc2).
+
+    `timescale` overrides the mp4 track timescale. Real Tesla front clips are
+    VFR and end up with odd, per-clip timescales (e.g. 18432 vs 7170000);
+    concatenating such mismatched segments is what broke the highlight render,
+    so tests pass different `timescale` values to reproduce that.
+    """
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi",
-        "-i", f"testsrc2=s={width}x{height}:d={duration_sec}:r=30",
+        "-i", f"testsrc2=s={width}x{height}:d={duration_sec}:r={fps}",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-preset", "ultrafast",
-        str(out_path),
     ]
+    if timescale is not None:
+        cmd += ["-video_track_timescale", str(timescale)]
+    cmd.append(str(out_path))
     subprocess.run(cmd, check=True, capture_output=True)

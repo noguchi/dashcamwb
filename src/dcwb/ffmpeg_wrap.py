@@ -4,7 +4,6 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 import numpy as np
 import cv2
@@ -187,25 +186,25 @@ def concat_clips(
     encoder = resolve_encoder(encoder)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fp:
-        list_path = Path(fp.name)
-        for clip in clips:
-            fp.write(f"file '{clip.resolve().as_posix()}'\n")
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(list_path),
+    # Use the concat *filter*, not the concat demuxer. Real Tesla front clips are
+    # VFR and end up with mismatched per-clip timescales (e.g. 18432 vs 7170000);
+    # the demuxer can't reconcile those when re-encoding and smears the output PTS
+    # into a multi-hour file. The filter regenerates a single uniform timeline.
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for clip in clips:
+        cmd += ["-i", str(clip)]
+    streams = "".join(f"[{i}:v]" for i in range(len(clips)))
+    cmd += [
+        "-filter_complex", f"{streams}concat=n={len(clips)}:v=1:a=0[outv]",
+        "-map", "[outv]",
         "-an",
         "-c:v", encoder,
         "-b:v", f"{bitrate_kbps}k",
         "-pix_fmt", "yuv420p",
+        "-fps_mode", "cfr",
         "-movflags", "+faststart",
         "-f", "mp4",
         str(tmp),
     ]
-    try:
-        _run_ffmpeg(cmd, tmp)
-        tmp.replace(dst)
-    finally:
-        list_path.unlink(missing_ok=True)
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)
