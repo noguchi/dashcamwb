@@ -236,11 +236,11 @@ def purge(usb_root: Path, cfg: dict, now: datetime) -> int:
 
 def format_report(candidates: list[Candidate]) -> str:
     if not candidates:
-        return "[prune] no low-motion candidates found."
+        return "[prune] no prune candidates found."
     by_day: dict[str, list[Candidate]] = {}
     for c in candidates:
         by_day.setdefault(c.segment.day_dir.name, []).append(c)
-    lines = ["[prune] low-motion candidates (dry-run unless --apply):"]
+    lines = ["[prune] prune candidates (dry-run unless --apply):"]
     total_files = 0
     for day in sorted(by_day):
         cands = sorted(by_day[day], key=lambda x: x.segment.ts)

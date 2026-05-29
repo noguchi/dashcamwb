@@ -313,7 +313,7 @@ def test_format_report_lists_candidates(tmp_path):
 
 def test_format_report_empty():
     from dcwb.prune import format_report
-    assert "no low-motion" in format_report([])
+    assert "no prune candidates" in format_report([])
 
 
 def test_overlap_guard_protects_segment_whose_tail_touches_event_start(tmp_path):
@@ -445,4 +445,21 @@ def test_format_report_shows_reason(tmp_path, monkeypatch):
                         lambda f: SegmentTelemetry(True, 10, {"PARK": 10}, False, 0.0))
     now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
     report = format_report(find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now))
-    assert "parked-sei" in report
+    assert "reason=parked-sei" in report
+
+
+def test_quarantine_low_motion_row_has_reason_and_null_gear(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, quarantine, _load_manifest, DEFAULT_PRUNE_CFG
+    from dcwb.telemetry import SegmentTelemetry
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    # no SEI -> motion fallback -> low-motion candidate
+    monkeypatch.setattr(prune, "read_segment_telemetry",
+                        lambda f: SegmentTelemetry(False, 0, {}, False, 0.0))
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    rows = quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
+    assert rows and all(r["reason"] == "low-motion" for r in rows)
+    assert all(r["gear_counts"] is None for r in rows)
+    loaded = _load_manifest(tmp_path / "@dcwb_trash")
+    assert all(r["reason"] == "low-motion" and r["gear_counts"] is None for r in loaded)
