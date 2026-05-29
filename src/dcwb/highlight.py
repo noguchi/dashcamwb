@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 import cv2
@@ -34,7 +35,12 @@ class CandidateScore:
 
 
 def _clamp01(value: float) -> float:
+    value = _finite_or_zero(value)
     return max(0.0, min(1.0, value))
+
+
+def _finite_or_zero(value: float) -> float:
+    return value if math.isfinite(value) else 0.0
 
 
 def extract_visual_features(clip: Path, duration_sec: float, samples: int = 8) -> VisualFeatures:
@@ -59,12 +65,16 @@ def extract_visual_features(clip: Path, duration_sec: float, samples: int = 8) -
 
 def score_candidate(candidate: HighlightCandidate, visual: VisualFeatures) -> CandidateScore:
     tel = candidate.telemetry
-    speed = _clamp01(tel.avg_speed_mps / 22.0)
-    speed_delta = _clamp01(tel.speed_delta_mps / 8.0)
-    visual_change = _clamp01(visual.visual_change / 20.0)
-    brightness = _clamp01(1.0 - abs(visual.mean_luma - 145.0) / 145.0)
-    still_penalty = -0.25 if tel.avg_speed_mps < 1.0 and visual.visual_change < 1.0 else 0.0
-    dark_penalty = -0.25 * _clamp01((45.0 - visual.mean_luma) / 45.0)
+    avg_speed_mps = _finite_or_zero(tel.avg_speed_mps)
+    speed_delta_mps = _finite_or_zero(tel.speed_delta_mps)
+    mean_luma = _finite_or_zero(visual.mean_luma)
+    visual_change_raw = _finite_or_zero(visual.visual_change)
+    speed = _clamp01(avg_speed_mps / 22.0)
+    speed_delta = _clamp01(speed_delta_mps / 8.0)
+    visual_change = _clamp01(visual_change_raw / 20.0)
+    brightness = _clamp01(1.0 - abs(mean_luma - 145.0) / 145.0)
+    still_penalty = -0.25 if avg_speed_mps < 1.0 and visual_change_raw < 1.0 else 0.0
+    dark_penalty = -0.25 * _clamp01((45.0 - mean_luma) / 45.0)
     low_confidence_penalty = -0.20 if candidate.low_confidence else 0.0
     penalty = still_penalty + dark_penalty + low_confidence_penalty
     total = _clamp01(
@@ -83,6 +93,9 @@ def score_candidate(candidate: HighlightCandidate, visual: VisualFeatures) -> Ca
             "speed_delta": speed_delta,
             "visual_change": visual_change,
             "brightness": brightness,
+            "still_penalty": still_penalty,
+            "dark_penalty": dark_penalty,
+            "low_confidence_penalty": low_confidence_penalty,
             "penalty": penalty,
         },
     )

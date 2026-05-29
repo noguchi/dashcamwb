@@ -110,3 +110,34 @@ def test_score_candidate_prefers_moving_bright_changing_clip(tmp_path):
     assert moving_score.components["speed"] > stopped_score.components["speed"]
     assert moving_score.components["visual_change"] > stopped_score.components["visual_change"]
     assert stopped_score.components["penalty"] < 0.0
+    assert stopped_score.components["still_penalty"] < 0.0
+    assert stopped_score.components["dark_penalty"] < 0.0
+    assert stopped_score.components["low_confidence_penalty"] == 0.0
+    assert stopped_score.components["penalty"] == (
+        stopped_score.components["still_penalty"]
+        + stopped_score.components["dark_penalty"]
+        + stopped_score.components["low_confidence_penalty"]
+    )
+
+
+def test_score_candidate_treats_non_finite_values_as_zero(tmp_path):
+    import math
+    from dcwb.highlight import HighlightCandidate, VisualFeatures, score_candidate
+    clip = tmp_path / "2026-05-08_00-00-00-front.mp4"
+    clip.write_bytes(b"not used")
+    candidate = HighlightCandidate(
+        clip=clip,
+        ts_str="2026-05-08_00-00-00",
+        duration_sec=60.0,
+        telemetry=SegmentTelemetry(True, 10, {"DRIVE": 10}, True, math.nan, math.nan, math.inf, 10),
+        low_confidence=True,
+    )
+
+    score = score_candidate(candidate, VisualFeatures(mean_luma=math.nan, visual_change=math.inf))
+
+    assert score.components["speed"] == 0.0
+    assert score.components["speed_delta"] == 0.0
+    assert score.components["visual_change"] == 0.0
+    assert score.components["brightness"] == 0.0
+    assert score.components["low_confidence_penalty"] < 0.0
+    assert 0.0 <= score.total <= 1.0
