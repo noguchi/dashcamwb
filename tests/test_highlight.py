@@ -376,3 +376,91 @@ def test_describe_candidates_records_skips(tmp_path, monkeypatch):
     reasons = {s["reason"] for s in skips}
     assert "vlm-parse-failed" in reasons
     assert "interest-below-min" in reasons
+
+
+def test_highlight_day_ai_path_writes_manifest_with_ai_block(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from dcwb.vlm import ClipDescription
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    names = []
+    for idx in range(2):
+        clip = day / f"2026-05-08_00-0{idx}-00-front.mp4"
+        make_motion_clip(clip, duration_sec=2.0)
+        names.append(clip.name)
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+
+    descs = {
+        names[0]: ClipDescription(9, ["海沿い", "夕焼け"], "夕暮れの海岸を流す", "flowing"),
+        names[1]: ClipDescription(7, ["市街地"], "街中を抜ける", "flowing"),
+    }
+
+    class FakeClient:
+        config = _ai_config()
+        def __init__(self):
+            self.calls = 0
+            self._name = ""
+        def health_check(self): return None
+        def describe(self, frames_b64):
+            self.calls += 1
+            return descs[self._name]
+
+    client = FakeClient()
+    real_sample = highlight._sample_frames_b64
+    def tracking_sample(clip, duration, cfg):
+        client._name = clip.name
+        return real_sample(clip, duration, cfg)
+    monkeypatch.setattr(highlight, "_sample_frames_b64", tracking_sample)
+
+    result = highlight_day(
+        source_root=source, date="2026-05-08", out_root=tmp_path / "highlights",
+        style="fast", allow_no_sei=False, encoder="libx264", bitrate_kbps=1000,
+        target_duration_sec=1.0, vlm_client=client, use_cache=True,
+    )
+
+    assert result.output_path.exists()
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["ai_model"] == "qwen2.5-vl-7b-instruct"
+    assert manifest["prompt_version"] == "1"
+    assert manifest["vlm_calls"] == 2
+    clip0 = manifest["clips"][0]
+    assert clip0["selection"] == "ai"
+    assert clip0["ai"]["interest"] in (7, 9)
+    assert clip0["ai"]["scene_tags"]
+    assert "scores" not in clip0
+    assert "visual" not in clip0
+    assert (tmp_path / "highlights" / "2026-05-08" / "vlm-cache.json").exists()
+
+
+def test_highlight_day_mvp_path_marks_selection(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    make_motion_clip(day / "2026-05-08_00-00-00-front.mp4", duration_sec=2.0)
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+
+    result = highlight_day(
+        source_root=source, date="2026-05-08", out_root=tmp_path / "highlights",
+        style="fast", allow_no_sei=False, encoder="libx264", bitrate_kbps=1000,
+        target_duration_sec=1.0, vlm_client=None, selection="mvp-fallback",
+    )
+
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["clips"][0]["selection"] == "mvp-fallback"
+    assert manifest["clips"][0]["scores"]

@@ -40,7 +40,7 @@ class CandidateScore:
 
 @dataclass(frozen=True)
 class Excerpt:
-    source: CandidateScore
+    source: CandidateScore | AiScore
     ts_str: str
     start_sec: float
     duration_sec: float
@@ -260,7 +260,7 @@ def score_candidate(candidate: HighlightCandidate, visual: VisualFeatures) -> Ca
 
 
 def plan_excerpts(
-    scores: list[CandidateScore],
+    scores: list[CandidateScore | AiScore],
     style: str,
     target_duration_sec: float | None = None,
 ) -> list[Excerpt]:
@@ -366,7 +366,7 @@ def score_candidates(candidates: list[HighlightCandidate]) -> list[CandidateScor
     return scores
 
 
-def _manifest_clip(excerpt: Excerpt, source_root: Path, rendered_path: Path) -> dict:
+def _manifest_clip(excerpt: Excerpt, source_root: Path, rendered_path: Path, selection: str) -> dict:
     scored = excerpt.source
     candidate = scored.candidate
     tel = candidate.telemetry
@@ -375,11 +375,43 @@ def _manifest_clip(excerpt: Excerpt, source_root: Path, rendered_path: Path) -> 
         "rendered_clip": rendered_path.name,
         "start_sec": round(excerpt.start_sec, 3),
         "duration_sec": round(excerpt.duration_sec, 3),
+        "selection": selection,
         "score": round(scored.total, 4),
         "scores": {key: round(value, 4) for key, value in scored.components.items()},
         "visual": {
             "mean_luma": round(scored.visual.mean_luma, 4),
             "visual_change": round(scored.visual.visual_change, 4),
+        },
+        "telemetry": {
+            "has_sei": tel.has_sei,
+            "gear_counts": tel.gear_counts,
+            "max_speed_mps": round(tel.max_speed_mps, 4),
+            "avg_speed_mps": round(tel.avg_speed_mps, 4),
+            "speed_delta_mps": round(tel.speed_delta_mps, 4),
+        },
+        "low_confidence": candidate.low_confidence,
+    }
+
+
+def _manifest_clip_ai(excerpt: Excerpt, source_root: Path, rendered_path: Path, model: str) -> dict:
+    scored = excerpt.source  # AiScore
+    candidate = scored.candidate
+    tel = candidate.telemetry
+    desc = scored.description
+    return {
+        "source_clip": candidate.clip.relative_to(source_root).as_posix(),
+        "rendered_clip": rendered_path.name,
+        "start_sec": round(excerpt.start_sec, 3),
+        "duration_sec": round(excerpt.duration_sec, 3),
+        "selection": "ai",
+        "score": round(scored.total, 4),
+        "ai": {
+            "interest": desc.interest,
+            "scene_tags": desc.scene_tags,
+            "caption": desc.caption,
+            "drive_quality": desc.drive_quality,
+            "model": model,
+            "cached": scored.cached,
         },
         "telemetry": {
             "has_sei": tel.has_sei,
@@ -401,6 +433,9 @@ def highlight_day(
     encoder: str = "h264_videotoolbox",
     bitrate_kbps: int = 12000,
     target_duration_sec: float | None = None,
+    vlm_client=None,
+    use_cache: bool = True,
+    selection: str = "mvp",
 ) -> HighlightResult:
     clips = discover_day_front_clips(source_root, date)
     skips: list[dict] = []
@@ -410,7 +445,27 @@ def highlight_day(
     day_out.mkdir(parents=True, exist_ok=True)
     manifest_path = day_out / f"highlight-{style}.json"
     output_path = day_out / f"highlight-{style}.mp4"
-    if not candidates:
+
+    use_ai = vlm_client is not None
+    ai_meta = {}
+    if use_ai:
+        scoring = describe_candidates(
+            candidates, vlm_client, source_root,
+            cache_path=day_out / "vlm-cache.json", use_cache=use_cache, skips=skips,
+        )
+        scores = scoring.scores
+        cfg = vlm_client.config
+        ai_meta = {
+            "ai_endpoint": cfg.endpoint,
+            "ai_model": cfg.model,
+            "prompt_version": PROMPT_VERSION,
+            "vlm_calls": scoring.calls,
+            "vlm_cache_hits": scoring.cache_hits,
+        }
+    else:
+        scores = score_candidates(candidates)
+
+    if not scores:
         manifest = {
             "date": date,
             "style": style,
@@ -420,25 +475,26 @@ def highlight_day(
             "output": output_path.name,
             "clips": [],
             "skips": skips or [{"reason": "no eligible driving front clips"}],
+            **ai_meta,
         }
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
         return HighlightResult(output_path, manifest_path, [], 0)
-    scores = score_candidates(candidates)
+
     excerpts = plan_excerpts(scores, style, target_duration_sec=target_duration_sec)
     rendered: list[Path] = []
     manifest_clips: list[dict] = []
     for idx, excerpt in enumerate(excerpts, start=1):
         rendered_path = clip_out / f"{idx:03d}-{excerpt.ts_str}.mp4"
         cut_clip(
-            excerpt.source.candidate.clip,
-            rendered_path,
-            excerpt.start_sec,
-            excerpt.duration_sec,
-            encoder=encoder,
-            bitrate_kbps=bitrate_kbps,
+            excerpt.source.candidate.clip, rendered_path,
+            excerpt.start_sec, excerpt.duration_sec,
+            encoder=encoder, bitrate_kbps=bitrate_kbps,
         )
         rendered.append(rendered_path)
-        manifest_clips.append(_manifest_clip(excerpt, source_root, rendered_path))
+        if use_ai:
+            manifest_clips.append(_manifest_clip_ai(excerpt, source_root, rendered_path, cfg.model))
+        else:
+            manifest_clips.append(_manifest_clip(excerpt, source_root, rendered_path, selection))
     if rendered:
         concat_clips(rendered, output_path, encoder=encoder, bitrate_kbps=bitrate_kbps)
     manifest = {
@@ -450,6 +506,7 @@ def highlight_day(
         "output": output_path.name,
         "clips": manifest_clips,
         "skips": skips,
+        **ai_meta,
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     return HighlightResult(output_path, manifest_path, rendered, len(rendered))
