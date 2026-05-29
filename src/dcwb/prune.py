@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 import cv2
 import numpy as np
 
@@ -133,7 +134,16 @@ def _classify(seg: Segment, cfg: dict) -> Candidate | None:
     return None
 
 
-def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]:
+FindProgress = Callable[[int, int, int], None]
+QuarantineProgress = Callable[[int, int, int], None]
+
+
+def find_candidates(
+    usb_root: Path,
+    cfg: dict,
+    now: datetime,
+    progress: FindProgress | None = None,
+) -> list[Candidate]:
     """Low-motion RecentClips segments that pass the min-age and overlap guards."""
     if now.tzinfo is None:
         now = now.replace(tzinfo=JST)
@@ -143,17 +153,19 @@ def find_candidates(usb_root: Path, cfg: dict, now: datetime) -> list[Candidate]
     out: list[Candidate] = []
     if not recent_root.exists():
         return out
+    segments: list[Segment] = []
     for day_dir in sorted(recent_root.iterdir()):
         if not day_dir.is_dir():
             continue
-        for seg in _segments_for_day(day_dir):
-            if seg.ts > cutoff:            # too new — protect the live buffer
-                continue
-            if _overlaps(seg.ts, seg.ts + SEGMENT_SPAN, intervals):  # overlaps a flagged event
-                continue
+        segments.extend(_segments_for_day(day_dir))
+    total = len(segments)
+    for idx, seg in enumerate(segments, start=1):
+        if seg.ts <= cutoff and not _overlaps(seg.ts, seg.ts + SEGMENT_SPAN, intervals):
             cand = _classify(seg, cfg)
             if cand is not None:
                 out.append(cand)
+        if progress is not None:
+            progress(idx, total, len(out))
     return out
 
 
@@ -177,7 +189,13 @@ def _write_manifest(trash_root: Path, rows: list[dict]) -> None:
     os.replace(tmp, path)
 
 
-def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: datetime) -> list[dict]:
+def quarantine(
+    usb_root: Path,
+    candidates: list[Candidate],
+    cfg: dict,
+    now: datetime,
+    progress: QuarantineProgress | None = None,
+) -> list[dict]:
     """Move each candidate segment's files into the trash and append manifest rows.
 
     Moves happen first, then the manifest is written once. Intended for a manual
@@ -188,6 +206,8 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
     trash_root = usb_root / cfg["trash_dir"]
     rows = _load_manifest(trash_root)
     new_rows: list[dict] = []
+    total_files = sum(len(c.segment.clips) for c in candidates)
+    processed = 0
     for cand in candidates:
         seg = cand.segment
         for clip in seg.clips:
@@ -195,6 +215,9 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
             dest = trash_root / rel
             if dest.exists():
                 print(f"[prune] skip (already in trash): {rel.as_posix()}", file=sys.stderr)
+                processed += 1
+                if progress is not None:
+                    progress(processed, total_files, len(new_rows))
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(clip), str(dest))
@@ -210,6 +233,9 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
                 "gear_counts": cand.gear_counts,
                 "status": "quarantined",
             })
+            processed += 1
+            if progress is not None:
+                progress(processed, total_files, len(new_rows))
     _write_manifest(trash_root, rows + new_rows)
     return new_rows
 

@@ -90,6 +90,41 @@ def test_cli_prune_recent_dry_run_default(tmp_path, capsys):
     assert "2020-01-01_00-00-00" in capsys.readouterr().out
 
 
+def test_cli_prune_recent_reports_scan_progress(tmp_path, capsys):
+    usb = tmp_path / "usb"
+    day = usb / "RecentClips" / "2020-01-01"
+    day.mkdir(parents=True)
+    for ts in ("2020-01-01_00-00-00", "2020-01-01_00-01-00"):
+        for cam in CAMERAS:
+            make_clip(day / f"{ts}-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    rc = main([
+        "prune-recent",
+        "--source", str(usb),
+        "--pipeline-config", str(tmp_path / "absent.json"),
+    ])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "[prune] scanning RecentClips: 1/2 segment(s) 50.0% candidates=1" in captured.err
+    assert "[prune] scanning RecentClips: 2/2 segment(s) 100.0% candidates=2" in captured.err
+
+
+def test_cli_prune_recent_apply_reports_quarantine_progress(tmp_path, capsys):
+    usb = tmp_path / "usb"
+    day = usb / "RecentClips" / "2020-01-01"
+    day.mkdir(parents=True)
+    for cam in CAMERAS:
+        make_clip(day / f"2020-01-01_00-00-00-{cam}.mp4", (1.0, 1.0, 1.0), duration_sec=1.0)
+    rc = main([
+        "prune-recent",
+        "--source", str(usb),
+        "--pipeline-config", str(tmp_path / "absent.json"),
+        "--apply",
+    ])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "[prune] quarantining: 6/6 file(s) 100.0% moved=6" in captured.err
+
+
 def test_cli_prune_recent_apply_quarantines(tmp_path):
     usb = tmp_path / "usb"
     day = usb / "RecentClips" / "2020-01-01"

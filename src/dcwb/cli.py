@@ -143,6 +143,13 @@ def _cmd_render_all(args) -> int:
             print(f"[render-all] FAILED {ev.name}: {e}", file=sys.stderr)
     return 0
 
+
+def _print_prune_progress(label: str, current: int, total: int, unit: str, **counts: int) -> None:
+    pct = 100.0 if total == 0 else current * 100.0 / total
+    suffix = "".join(f" {name}={value}" for name, value in counts.items())
+    print(f"[prune] {label}: {current}/{total} {unit} {pct:.1f}%{suffix}", file=sys.stderr, flush=True)
+
+
 def _cmd_prune_recent(args) -> int:
     if args.restore and (args.apply or args.purge):
         print("[prune] --restore cannot be combined with --apply/--purge", file=sys.stderr)
@@ -159,11 +166,34 @@ def _cmd_prune_recent(args) -> int:
         print(f"[prune] restored {n} file(s)", file=sys.stderr)
         return 0
 
-    candidates = prune_mod.find_candidates(usb_root, cfg, now)
+    candidates = prune_mod.find_candidates(
+        usb_root,
+        cfg,
+        now,
+        progress=lambda current, total, candidate_count: _print_prune_progress(
+            "scanning RecentClips",
+            current,
+            total,
+            "segment(s)",
+            candidates=candidate_count,
+        ),
+    )
     print(prune_mod.format_report(candidates))
 
     if args.apply:
-        rows = prune_mod.quarantine(usb_root, candidates, cfg, now)
+        rows = prune_mod.quarantine(
+            usb_root,
+            candidates,
+            cfg,
+            now,
+            progress=lambda current, total, moved: _print_prune_progress(
+                "quarantining",
+                current,
+                total,
+                "file(s)",
+                moved=moved,
+            ),
+        )
         purged = prune_mod.purge(usb_root, cfg, now)
         print(f"[prune] quarantined {len(rows)} file(s); purged {purged} expired", file=sys.stderr)
     elif args.purge:
