@@ -57,6 +57,14 @@ STYLE_CONFIGS = {
 }
 
 
+def _excerpt_duration(candidate_duration: float, cfg: StyleConfig) -> float:
+    candidate_duration = _finite_or_zero(candidate_duration)
+    if candidate_duration <= 0:
+        return 0.0
+    style_duration = max(cfg.min_sec, min(cfg.max_sec, cfg.excerpt_sec))
+    return min(candidate_duration, style_duration)
+
+
 def _clamp01(value: float) -> float:
     value = _finite_or_zero(value)
     return max(0.0, min(1.0, value))
@@ -133,19 +141,20 @@ def plan_excerpts(
         raise ValueError(f"unknown highlight style: {style}")
     cfg = STYLE_CONFIGS[style]
     target = target_duration_sec if target_duration_sec is not None else cfg.target_sec
-    selected: list[CandidateScore] = []
+    selected: list[tuple[CandidateScore, float]] = []
     total = 0.0
     for scored in sorted(scores, key=lambda s: s.total, reverse=True):
         if scored.total <= 0:
             continue
-        duration = min(cfg.max_sec, max(cfg.min_sec, min(cfg.excerpt_sec, scored.candidate.duration_sec)))
+        duration = _excerpt_duration(scored.candidate.duration_sec, cfg)
+        if duration <= 0:
+            continue
         if total >= target:
             break
-        selected.append(scored)
+        selected.append((scored, duration))
         total += duration
     excerpts: list[Excerpt] = []
-    for scored in sorted(selected, key=lambda s: s.candidate.ts_str):
-        duration = min(cfg.max_sec, max(cfg.min_sec, min(cfg.excerpt_sec, scored.candidate.duration_sec)))
+    for scored, duration in sorted(selected, key=lambda s: s[0].candidate.ts_str):
         start = max(0.0, (scored.candidate.duration_sec - duration) / 2.0)
         excerpts.append(
             Excerpt(

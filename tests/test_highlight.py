@@ -192,3 +192,14 @@ def test_plan_excerpts_preserves_chronological_order(tmp_path):
     excerpts = plan_excerpts(scores, "fast", target_duration_sec=24)
 
     assert [e.ts_str for e in excerpts] == sorted(e.ts_str for e in excerpts)
+
+
+def test_plan_excerpts_never_exceeds_source_duration(tmp_path):
+    from dcwb.highlight import plan_excerpts
+    scores = [_scored_candidate(tmp_path, "2026-05-08_00-00-00", 0.9, duration=5.0)]
+
+    excerpts = plan_excerpts(scores, "fast")
+
+    assert len(excerpts) == 1
+    assert excerpts[0].duration_sec == 5.0
+    assert excerpts[0].start_sec == 0.0
