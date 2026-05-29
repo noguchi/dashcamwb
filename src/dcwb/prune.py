@@ -205,6 +205,8 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
                 "segment_time": seg.ts.isoformat(),
                 "quarantined_at": now.astimezone(timezone.utc).isoformat(),
                 "motion_score": round(cand.score, 4),
+                "reason": cand.reason,
+                "gear_counts": cand.gear_counts,
                 "status": "quarantined",
             })
     _write_manifest(trash_root, rows + new_rows)
@@ -246,7 +248,7 @@ def format_report(candidates: list[Candidate]) -> str:
         for c in cands:
             n = len(c.segment.clips)
             total_files += n
-            lines.append(f"    {c.segment.ts_str}  score={c.score:.2f}  files={n}")
+            lines.append(f"    {c.segment.ts_str}  reason={c.reason}  score={c.score:.2f}  files={n}")
     lines.append(f"[prune] total: {len(candidates)} segment(s), {total_files} file(s)")
     return "\n".join(lines)
 

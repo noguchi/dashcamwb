@@ -418,3 +418,31 @@ def test_use_telemetry_false_ignores_gear(tmp_path, monkeypatch):
     cands = find_candidates(tmp_path, cfg, now)
     assert len(cands) == 1
     assert cands[0].reason == "low-motion"
+
+
+def test_quarantine_records_reason_and_gear(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, quarantine, _load_manifest, DEFAULT_PRUNE_CFG
+    from dcwb.telemetry import SegmentTelemetry
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    monkeypatch.setattr(prune, "read_segment_telemetry",
+                        lambda f: SegmentTelemetry(True, 10, {"PARK": 10}, False, 0.0))
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    rows = quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
+    assert rows and all(r["reason"] == "parked-sei" for r in rows)
+    assert all(r["gear_counts"] == {"PARK": 10} for r in rows)
+    assert all(r["reason"] == "parked-sei" for r in _load_manifest(tmp_path / "@dcwb_trash"))
+
+
+def test_format_report_shows_reason(tmp_path, monkeypatch):
+    from dcwb import prune
+    from dcwb.prune import find_candidates, format_report, DEFAULT_PRUNE_CFG
+    from dcwb.telemetry import SegmentTelemetry
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    _make_static_segment(day, "2026-05-08_00-00-00")
+    monkeypatch.setattr(prune, "read_segment_telemetry",
+                        lambda f: SegmentTelemetry(True, 10, {"PARK": 10}, False, 0.0))
+    now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
+    report = format_report(find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now))
+    assert "parked-sei" in report

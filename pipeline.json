@@ -15,6 +15,7 @@
     "cameras_analyzed": ["front"],
     "min_age_hours": 48,
     "retention_days": 14,
-    "trash_dir": "@dcwb_trash"
+    "trash_dir": "@dcwb_trash",
+    "use_telemetry": true
   }
 }
