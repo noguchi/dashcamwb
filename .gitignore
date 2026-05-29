@@ -6,6 +6,9 @@ corrected/
 logs/
 calibration_report.html
 
+# Local development worktrees
+.worktrees/
+
 # UI preview cache
 cache/
 
