@@ -59,6 +59,8 @@ CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を
 
 `prune_mod.find_candidates` が `front` カメラの間引きフレーム間差分スコアで低モーションセグメントを検出し、`@dcwb_trash/` へ隔離（`manifest.jsonl` で管理）する。デフォルトはドライラン。`--apply` で隔離実行と期限切れ削除、`--purge` で削除のみ、`--restore SEGMENT_ID|all` で復元。`min_age_hours`（既定 48h）以内の新しいセグメントと、セグメントのタイムスタンプが SentryClips/SavedClips のイベント時間窓に入るものはスキップして保護する。パラメータは `pipeline.json` の `prune` セクション（`motion_threshold`, `frames_sampled`, `cameras_analyzed`, `min_age_hours`, `retention_days`, `trash_dir`）で調整可能。
 
+判定は既定で **gear 主・モーション補助**: `telemetry.read_segment_telemetry` が front クリップの埋め込み SEI（Tesla 公式 `dashcam.proto`、vendored `src/dcwb/vendor/tesla_dashcam/`）から `gear_state` を読み、DRIVE/REVERSE を含めば走行として保護、全 PARK なら候補（reason=`parked-sei`）。SEI 無しは従来のモーションスコアにフォールバック（reason=`low-motion`）。`prune.use_telemetry=false` で純モーションに戻る。SEI は firmware 2025.44.25+/HW3+ かつ駐車中は欠落しうるため、フォールバックは必須。
+
 ### 時刻・昼夜判定
 
 `daylight.is_daytime` は astral で日の出+30分〜日の入り−30分を昼と判定（tz-aware 必須、既定は Tokyo 緯度経度）。**Tesla の `event.json` timestamp や RecentClips のファイル名は naive なので JST(UTC+9) として解釈**する（`calibrate.JST`）。`calibrate` のサンプル予算は**イベント単位**（`max_per_event` をイベント内クリップに按分）。`event.json` の無い RecentScene day-dir では**クリップ単位のファイル名タイムスタンプ**で昼夜フィルタし、夜間クリップが profile を汚染しないようにする。

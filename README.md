@@ -105,6 +105,7 @@ uv run dcwb prune-recent --source /Volumes/sentryusb --restore all
 - 隔離されたファイルは `@dcwb_trash/` に 14 日間保持され、`--apply` または `--purge` 実行時に期限切れ分が削除されます。
 - `--purge` 単体で、期限切れ trash の削除だけを実行することもできます（`--apply` 時は隔離後に自動で実行）。
 - 閾値・保持期間は `pipeline.json` の `prune` セクションで調整できます。
+- **走行判定**: 既定（`use_telemetry: true`）では、Tesla が各 mp4 に埋め込む SEI テレメトリの `gear_state` を読み、DRIVE/REVERSE を含むセグメントは「走行」として保護します。SEI が無いセグメント（駐車中や旧 firmware）は従来どおり front カメラのモーションスコアで判定します。`pipeline.json` の `prune.use_telemetry` を `false` にすると純モーション動作に戻ります。
 
 ## 設定 (`pipeline.json`)
 
