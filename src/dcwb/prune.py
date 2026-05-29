@@ -39,7 +39,7 @@ class Segment:
 @dataclass
 class Candidate:
     segment: Segment
-    score: float
+    score: float | None  # None when classified without computing a motion score (e.g. parked-sei)
     reason: str = "low-motion"
     gear_counts: dict | None = None
 
@@ -122,8 +122,9 @@ def _classify(seg: Segment, cfg: dict) -> Candidate | None:
             if tel.has_sei:
                 if tel.drove:
                     return None  # real drive -> protect
-                # has_sei but no DRIVE/REVERSE (PARK or NEUTRAL only) => parked
-                return Candidate(segment=seg, score=0.0, reason="parked-sei",
+                # has_sei but no DRIVE/REVERSE (PARK or NEUTRAL only) => parked.
+                # score=None: motion was never computed, so don't fake a 0.0.
+                return Candidate(segment=seg, score=None, reason="parked-sei",
                                  gear_counts=tel.gear_counts)
             # SEI absent -> ambiguous -> fall through to motion
     score = segment_motion_score(seg, cfg)
@@ -204,7 +205,7 @@ def quarantine(usb_root: Path, candidates: list[Candidate], cfg: dict, now: date
                 "trash_path": dest.relative_to(usb_root).as_posix(),
                 "segment_time": seg.ts.isoformat(),
                 "quarantined_at": now.astimezone(timezone.utc).isoformat(),
-                "motion_score": round(cand.score, 4),
+                "motion_score": round(cand.score, 4) if cand.score is not None else None,
                 "reason": cand.reason,
                 "gear_counts": cand.gear_counts,
                 "status": "quarantined",
@@ -248,7 +249,8 @@ def format_report(candidates: list[Candidate]) -> str:
         for c in cands:
             n = len(c.segment.clips)
             total_files += n
-            lines.append(f"    {c.segment.ts_str}  reason={c.reason}  score={c.score:.2f}  files={n}")
+            score_str = f"{c.score:.2f}" if c.score is not None else "n/a"
+            lines.append(f"    {c.segment.ts_str}  reason={c.reason}  score={score_str}  files={n}")
     lines.append(f"[prune] total: {len(candidates)} segment(s), {total_files} file(s)")
     return "\n".join(lines)
 

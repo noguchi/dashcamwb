@@ -432,7 +432,10 @@ def test_quarantine_records_reason_and_gear(tmp_path, monkeypatch):
     rows = quarantine(tmp_path, find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now), DEFAULT_PRUNE_CFG, now)
     assert rows and all(r["reason"] == "parked-sei" for r in rows)
     assert all(r["gear_counts"] == {"PARK": 10} for r in rows)
-    assert all(r["reason"] == "parked-sei" for r in _load_manifest(tmp_path / "@dcwb_trash"))
+    # parked-sei never computes motion -> motion_score is null, not a fake 0.0
+    assert all(r["motion_score"] is None for r in rows)
+    loaded = _load_manifest(tmp_path / "@dcwb_trash")
+    assert all(r["reason"] == "parked-sei" and r["motion_score"] is None for r in loaded)
 
 
 def test_format_report_shows_reason(tmp_path, monkeypatch):
@@ -446,6 +449,9 @@ def test_format_report_shows_reason(tmp_path, monkeypatch):
     now = datetime(2026, 5, 20, 0, 0, tzinfo=JST)
     report = format_report(find_candidates(tmp_path, DEFAULT_PRUNE_CFG, now))
     assert "reason=parked-sei" in report
+    # motion not computed for parked-sei -> shown as n/a, not 0.00
+    assert "score=n/a" in report
+    assert "score=0.00" not in report
 
 
 def test_quarantine_low_motion_row_has_reason_and_null_gear(tmp_path, monkeypatch):
