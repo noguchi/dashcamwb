@@ -126,12 +126,14 @@ def describe_candidates(
     cache_path: Path,
     use_cache: bool = True,
     skips: list[dict] | None = None,
+    on_progress=None,
 ) -> AiScoring:
     cfg = vlm_client.config
     cache = load_vlm_cache(cache_path) if use_cache else {}
     calls = 0
     cache_hits = 0
     scores: list[AiScore] = []
+    total = len(candidates)
 
     def record_skip(clip: Path, reason: str) -> None:
         if skips is None:
@@ -142,7 +144,11 @@ def describe_candidates(
             src = clip.as_posix()
         skips.append({"source_clip": src, "reason": reason})
 
-    for cand in candidates:
+    def report(done: int, note: str) -> None:
+        if on_progress:
+            on_progress(done, total, note)
+
+    for done, cand in enumerate(candidates, start=1):
         key = _cache_key(cand.clip)
         entry = cache.get(key) if use_cache else None
         if entry and entry.get("model") == cfg.model and entry.get("prompt_version") == PROMPT_VERSION:
@@ -158,6 +164,7 @@ def describe_candidates(
             frames = _sample_frames_b64(cand.clip, cand.duration_sec, cfg)
             if not frames:
                 record_skip(cand.clip, "no-frames")
+                report(done, "skip:no-frames")
                 continue
             desc = vlm_client.describe(frames)
             calls += 1
@@ -173,11 +180,16 @@ def describe_candidates(
                 }
         if desc.parse_failed or desc.interest is None:
             record_skip(cand.clip, "vlm-parse-failed")
+            report(done, "skip:vlm-parse-failed")
             continue
         if desc.interest < cfg.interest_min:
             record_skip(cand.clip, "interest-below-min")
+            report(done, f"skip:interest-below-min (interest={desc.interest})")
             continue
         scores.append(AiScore(candidate=cand, total=_interest_to_total(desc), description=desc, cached=cached))
+        tag = ",".join(desc.scene_tags[:2])
+        suffix = " (cache)" if cached else ""
+        report(done, f"interest={desc.interest} {tag}{suffix}".rstrip())
 
     if use_cache:
         save_vlm_cache(cache_path, cache)
@@ -312,30 +324,40 @@ def build_candidates(
     clips: list[Path],
     allow_no_sei: bool,
     skips: list[dict] | None = None,
+    on_progress=None,
 ) -> list[HighlightCandidate]:
     def record_skip(clip: Path, reason: str) -> None:
         if skips is not None:
             skips.append({"source_clip": clip.as_posix(), "reason": reason})
 
+    total = len(clips)
     candidates: list[HighlightCandidate] = []
-    for clip in clips:
+    for done, clip in enumerate(clips, start=1):
         try:
             duration = probe_duration(clip)
         except Exception:
             record_skip(clip, "unreadable")
+            if on_progress:
+                on_progress(done, total, len(candidates))
             continue
         if duration <= 0:
             record_skip(clip, "non-positive-duration")
+            if on_progress:
+                on_progress(done, total, len(candidates))
             continue
         telemetry = read_segment_telemetry(clip)
         if telemetry.has_sei:
             if not telemetry.drove:
                 record_skip(clip, "not-driving")
+                if on_progress:
+                    on_progress(done, total, len(candidates))
                 continue
             low_confidence = False
         else:
             if not allow_no_sei:
                 record_skip(clip, "no-sei")
+                if on_progress:
+                    on_progress(done, total, len(candidates))
                 continue
             low_confidence = True
         candidates.append(
@@ -347,6 +369,8 @@ def build_candidates(
                 low_confidence=low_confidence,
             )
         )
+        if on_progress:
+            on_progress(done, total, len(candidates))
     return candidates
 
 
@@ -436,10 +460,19 @@ def highlight_day(
     vlm_client=None,
     use_cache: bool = True,
     selection: str = "mvp",
+    on_progress=None,
 ) -> HighlightResult:
+    def phase_progress(phase: str):
+        if on_progress is None:
+            return None
+        return lambda done, total, note: on_progress(phase, done, total, note)
+
     clips = discover_day_front_clips(source_root, date)
     skips: list[dict] = []
-    candidates = build_candidates(clips, allow_no_sei=allow_no_sei, skips=skips)
+    candidates = build_candidates(
+        clips, allow_no_sei=allow_no_sei, skips=skips,
+        on_progress=phase_progress("telemetry"),
+    )
     day_out = out_root / date
     clip_out = day_out / "clips"
     day_out.mkdir(parents=True, exist_ok=True)
@@ -452,6 +485,7 @@ def highlight_day(
         scoring = describe_candidates(
             candidates, vlm_client, source_root,
             cache_path=day_out / "vlm-cache.json", use_cache=use_cache, skips=skips,
+            on_progress=phase_progress("vlm"),
         )
         scores = scoring.scores
         cfg = vlm_client.config

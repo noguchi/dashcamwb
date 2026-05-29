@@ -324,3 +324,34 @@ def test_highlight_day_passes_client_when_healthy(tmp_path, monkeypatch):
     assert rc == 0
     assert isinstance(captured["vlm_client"], LiveClient)
     assert captured["vlm_client"].config.model == "custom-vlm"
+
+
+def test_highlight_day_prints_progress_to_stderr(tmp_path, monkeypatch, capsys):
+    from dcwb import cli
+    from dcwb.highlight import HighlightResult
+
+    class LiveClient:
+        def __init__(self, config): self.config = config
+        def health_check(self): return None
+
+    def fake_highlight_day(**kwargs):
+        cb = kwargs["on_progress"]
+        cb("telemetry", 5, 100, "kept=3")    # throttled (not a multiple of 25, not last)
+        cb("telemetry", 100, 100, "kept=60")  # final clip always reported
+        cb("vlm", 2, 4, "interest=8 海沿い")  # every VLM event reported
+        return HighlightResult(tmp_path / "h.mp4", tmp_path / "h.json", [tmp_path / "h.mp4"], 1)
+
+    monkeypatch.setattr(cli, "VlmClient", LiveClient)
+    monkeypatch.setattr(cli, "highlight_day", fake_highlight_day)
+
+    rc = cli.main([
+        "highlight-day", "--source", str(tmp_path), "--date", "2026-05-08",
+        "--out-root", str(tmp_path / "out"), "--pipeline-config", str(tmp_path / "missing.json"),
+    ])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "telemetry 5/100" not in err       # throttled out
+    assert "telemetry 100/100 kept=60" in err
+    assert "vlm 2/4" in err
+    assert "interest=8 海沿い" in err

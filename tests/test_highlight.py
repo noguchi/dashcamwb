@@ -67,6 +67,93 @@ def test_build_candidates_includes_driving_sei_clip(tmp_path, monkeypatch):
     assert candidates[0].telemetry.avg_speed_mps == 8.0
 
 
+def test_build_candidates_reports_progress_per_clip(tmp_path, monkeypatch):
+    from dcwb import highlight
+    from dcwb.highlight import build_candidates
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    c1 = _front_clip(day, "2026-05-08_00-00-00")
+    c2 = _front_clip(day, "2026-05-08_00-01-00")
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 12.0, 8.0, 4.0, 10),
+    )
+
+    events = []
+    build_candidates(
+        [c1, c2], allow_no_sei=False,
+        on_progress=lambda done, total, kept: events.append((done, total, kept)),
+    )
+
+    assert events == [(1, 2, 1), (2, 2, 2)]
+
+
+def test_describe_candidates_reports_progress_per_clip(tmp_path, monkeypatch):
+    from dcwb import highlight
+    from dcwb.highlight import HighlightCandidate, describe_candidates
+    from dcwb.vlm import ClipDescription
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    day = tmp_path / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    a = day / "2026-05-08_00-00-00-front.mp4"
+    b = day / "2026-05-08_00-01-00-front.mp4"
+    make_motion_clip(a, duration_sec=1.0)
+    make_motion_clip(b, duration_sec=1.0)
+    cands = [
+        HighlightCandidate(a, "2026-05-08_00-00-00", 1.0, SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 12.0, 8.0, 3.0, 10)),
+        HighlightCandidate(b, "2026-05-08_00-01-00", 1.0, SegmentTelemetry(True, 10, {"DRIVE": 10}, True, 12.0, 8.0, 3.0, 10)),
+    ]
+    descs = {a.name: ClipDescription(8, ["海沿い"], "海", "flowing"), b.name: ClipDescription(5, [], "街", "flowing")}
+    client = _FakeVlmClient({}, _ai_config())
+    def sample_stub(clip, duration, cfg):
+        client._next_name = clip.name
+        client.by_name = descs
+        return ["uri"]
+    monkeypatch.setattr(highlight, "_sample_frames_b64", sample_stub)
+
+    events = []
+    describe_candidates(
+        cands, client, source_root=tmp_path, cache_path=tmp_path / "c.json", use_cache=False,
+        on_progress=lambda done, total, note: events.append((done, total, note)),
+    )
+
+    assert [(d, t) for d, t, _ in events] == [(1, 2), (2, 2)]
+
+
+def test_highlight_day_emits_phase_tagged_progress(tmp_path, monkeypatch):
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from dcwb.vlm import ClipDescription
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-08"
+    day.mkdir(parents=True)
+    clip = day / "2026-05-08_00-00-00-front.mp4"
+    make_motion_clip(clip, duration_sec=2.0)
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+
+    class FakeClient:
+        config = _ai_config()
+        def health_check(self): return None
+        def describe(self, frames_b64): return ClipDescription(8, ["海沿い"], "海", "flowing")
+    monkeypatch.setattr(highlight, "_sample_frames_b64", lambda c, d, cfg: ["uri"])
+
+    phases = []
+    highlight_day(
+        source_root=source, date="2026-05-08", out_root=tmp_path / "h",
+        style="fast", allow_no_sei=False, encoder="libx264", bitrate_kbps=1000,
+        target_duration_sec=1.0, vlm_client=FakeClient(),
+        on_progress=lambda phase, done, total, note: phases.append(phase),
+    )
+
+    assert "telemetry" in phases
+    assert "vlm" in phases
+
+
 def test_extract_visual_features_distinguishes_motion_from_static(tmp_path):
     from dcwb.highlight import extract_visual_features
     from tests.fixtures.make_synthetic import make_motion_clip

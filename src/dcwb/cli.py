@@ -243,6 +243,13 @@ def _cmd_highlight_day(args) -> int:
         client = None
         selection = "mvp-fallback"
 
+    def on_progress(phase: str, done: int, total: int, note: str) -> None:
+        # Telemetry scans hundreds of clips; throttle to every 25 and the last.
+        # VLM calls are few and slow, so report each one.
+        if phase == "telemetry" and done != total and done % 25 != 0:
+            return
+        print(f"[highlight] {phase} {done}/{total} {note}".rstrip(), file=sys.stderr, flush=True)
+
     try:
         result = highlight_day(
             source_root=args.source.resolve(),
@@ -255,6 +262,7 @@ def _cmd_highlight_day(args) -> int:
             vlm_client=client,
             use_cache=not args.no_vlm_cache,
             selection=selection,
+            on_progress=on_progress,
         )
     except FileNotFoundError as e:
         print(f"[highlight] {e}", file=sys.stderr)
