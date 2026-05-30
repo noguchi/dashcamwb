@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -12,7 +13,7 @@ import numpy as np
 
 from dcwb.calibrate import JST
 from dcwb.daylight import TOKYO_LAT, TOKYO_LON, is_daytime
-from dcwb.ffmpeg_wrap import concat_clips, cut_clip, extract_frames, probe_duration
+from dcwb.ffmpeg_wrap import LookConfig, concat_clips, cut_clip, extract_frames, probe_duration
 from dcwb.profile import Profile
 from dcwb.render import compose_clip_matrix, estimate_scene_gain
 from dcwb.telemetry import SegmentTelemetry, read_segment_telemetry
@@ -514,6 +515,8 @@ def highlight_day(
     profiles_dir: Path | None = None,
     awb_cfg: dict | None = None,
     white_balance: bool = True,
+    look_cfg: dict | None = None,
+    apply_look: bool = True,
 ) -> HighlightResult:
     def phase_progress(phase: str):
         if on_progress is None:
@@ -579,6 +582,8 @@ def highlight_day(
     awb = awb_cfg or DEFAULT_AWB
     wb_cache: dict[Path, tuple] = {}
 
+    look = LookConfig.from_dict(look_cfg) if apply_look else None
+
     excerpts = plan_excerpts(scores, style, target_duration_sec=target_duration_sec)
     rendered: list[Path] = []
     manifest_clips: list[dict] = []
@@ -600,7 +605,7 @@ def highlight_day(
         cut_clip(
             src_clip, rendered_path,
             excerpt.start_sec, excerpt.duration_sec,
-            encoder=encoder, bitrate_kbps=bitrate_kbps, matrix=matrix,
+            encoder=encoder, bitrate_kbps=bitrate_kbps, matrix=matrix, look=look,
         )
         rendered.append(rendered_path)
         if use_ai:
@@ -619,6 +624,7 @@ def highlight_day(
         "target_duration_sec": target_duration_sec or STYLE_CONFIGS[style].target_sec,
         "output": output_path.name,
         "white_balance_enabled": wb_profile is not None,
+        "look": ({"applied": True, **dataclasses.asdict(look)} if look is not None else {"applied": False}),
         "clips": manifest_clips,
         "skips": skips,
         **ai_meta,

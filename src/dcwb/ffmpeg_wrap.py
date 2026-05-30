@@ -1,15 +1,43 @@
 from __future__ import annotations
+import dataclasses
 import functools
 import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 import cv2
 from dcwb.matrix import Matrix3x3
 
 _ENCODER_LINE = re.compile(r"^\s[A-Z.]{6}\s+(\S+)")
+
+
+@dataclass(frozen=True)
+class LookConfig:
+    """Creative 'look' grade applied after the neutral WB matrix.
+
+    A gentle S-curve (deepen shadows, lift highlights) + saturation/gamma to
+    counter the flat, muted look of Tesla's forensic-tuned footage. tag_bt709
+    writes bt709 color metadata so players stop guessing at the untagged stream.
+    """
+    scurve: str = "0/0 0.25/0.21 0.5/0.5 0.75/0.82 1/1"
+    saturation: float = 1.12
+    gamma: float = 1.03
+    tag_bt709: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "LookConfig":
+        data = data or {}
+        known = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+    def filters(self) -> list[str]:
+        return [
+            f"curves=master='{self.scurve}'",
+            f"eq=saturation={self.saturation:.4f}:gamma={self.gamma:.4f}",
+        ]
 
 
 @functools.lru_cache(maxsize=1)
@@ -159,11 +187,14 @@ def cut_clip(
     encoder: str = "h264_videotoolbox",
     bitrate_kbps: int = 12000,
     matrix: Matrix3x3 | None = None,
+    look: LookConfig | None = None,
 ) -> None:
     """Cut [start_sec, start_sec+duration_sec) from src into dst.
 
-    When `matrix` is given, the 3x3 RGB color transform is applied via
-    colorchannelmixer in the same pass (no second re-encode).
+    When `matrix` is given, the 3x3 RGB color transform (white balance) is
+    applied via colorchannelmixer. When `look` is given, the creative grade
+    (S-curve + saturation/gamma) is appended after it. Both run in the same
+    single pass (no second re-encode).
     """
     encoder = resolve_encoder(encoder)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -175,12 +206,21 @@ def cut_clip(
         "-t", f"{duration_sec:.3f}",
         "-an",
     ]
+    vf: list[str] = []
     if matrix is not None:
-        cmd += ["-vf", _colorchannelmixer(matrix)]
+        vf.append(_colorchannelmixer(matrix))
+    if look is not None:
+        vf += look.filters()
+    if vf:
+        cmd += ["-vf", ",".join(vf)]
     cmd += [
         "-c:v", encoder,
         "-b:v", f"{bitrate_kbps}k",
         "-pix_fmt", "yuv420p",
+    ]
+    if look is not None and look.tag_bt709:
+        cmd += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+    cmd += [
         "-movflags", "+faststart",
         "-f", "mp4",
         str(tmp),

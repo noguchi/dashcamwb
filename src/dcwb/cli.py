@@ -82,6 +82,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--no-vlm-cache", action="store_true", help="Ignore and overwrite the per-day VLM cache")
     ph.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR, help="Camera profiles dir (front.json) for white balance")
     ph.add_argument("--no-white-balance", action="store_true", help="Do not apply A x B white-balance correction to excerpts")
+    ph.add_argument("--no-look", action="store_true", help="Do not apply the creative look grade (S-curve + saturation) to excerpts")
 
     return p
 
@@ -268,6 +269,8 @@ def _cmd_highlight_day(args) -> int:
             profiles_dir=args.profiles_dir.resolve(),
             awb_cfg=cfg_all.get("awb"),
             white_balance=not args.no_white_balance,
+            look_cfg=cfg_all.get("look"),
+            apply_look=not args.no_look,
         )
     except FileNotFoundError as e:
         print(f"[highlight] {e}", file=sys.stderr)

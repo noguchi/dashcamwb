@@ -607,6 +607,58 @@ def test_highlight_day_white_balance_off_records_not_applied(tmp_path, monkeypat
     assert json.loads(result.manifest_path.read_text())["clips"][0]["white_balance"]["applied"] is False
 
 
+def test_highlight_day_records_look_when_applied(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-27"
+    day.mkdir(parents=True)
+    make_motion_clip(day / "2026-05-27_13-00-00-front.mp4", duration_sec=2.0)
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+
+    result = highlight_day(
+        source_root=source, date="2026-05-27", out_root=tmp_path / "h",
+        style="fast", allow_no_sei=False, encoder="libx264", bitrate_kbps=1000,
+        target_duration_sec=1.0, vlm_client=None,
+        white_balance=False, apply_look=True, look_cfg={"saturation": 1.15},
+    )
+
+    m = json.loads(result.manifest_path.read_text())
+    assert m["look"]["applied"] is True
+    assert m["look"]["saturation"] == 1.15
+
+
+def test_highlight_day_look_off(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-27"
+    day.mkdir(parents=True)
+    make_motion_clip(day / "2026-05-27_13-00-00-front.mp4", duration_sec=2.0)
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+
+    result = highlight_day(
+        source_root=source, date="2026-05-27", out_root=tmp_path / "h",
+        style="fast", allow_no_sei=False, encoder="libx264", bitrate_kbps=1000,
+        target_duration_sec=1.0, vlm_client=None,
+        white_balance=False, apply_look=False,
+    )
+
+    assert json.loads(result.manifest_path.read_text())["look"]["applied"] is False
+
+
 def test_highlight_day_mvp_path_marks_selection(tmp_path, monkeypatch):
     import json
     from dcwb import highlight

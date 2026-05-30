@@ -355,6 +355,33 @@ def test_highlight_day_passes_white_balance_args(tmp_path, monkeypatch):
     assert captured["awb_cfg"]["gain_min"] == 0.6
 
 
+def test_highlight_day_no_look_flag(tmp_path, monkeypatch):
+    from dcwb import cli
+    from dcwb.highlight import HighlightResult
+
+    class LiveClient:
+        def __init__(self, config): self.config = config
+        def health_check(self): return None
+
+    captured = {}
+    def fake_highlight_day(**kwargs):
+        captured.update(kwargs)
+        return HighlightResult(tmp_path / "h.mp4", tmp_path / "h.json", [tmp_path / "h.mp4"], 1)
+    monkeypatch.setattr(cli, "VlmClient", LiveClient)
+    monkeypatch.setattr(cli, "highlight_day", fake_highlight_day)
+
+    cfg = tmp_path / "pipeline.json"
+    cfg.write_text('{"look": {"saturation": 1.2}}')
+    rc = cli.main([
+        "highlight-day", "--source", str(tmp_path), "--date", "2026-05-08",
+        "--out-root", str(tmp_path / "out"), "--no-look", "--pipeline-config", str(cfg),
+    ])
+
+    assert rc == 0
+    assert captured["apply_look"] is False
+    assert captured["look_cfg"]["saturation"] == 1.2
+
+
 def test_highlight_day_no_white_balance_flag(tmp_path, monkeypatch):
     from dcwb import cli
     from dcwb.highlight import HighlightResult

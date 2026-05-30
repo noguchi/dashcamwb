@@ -97,6 +97,34 @@ def test_cut_clip_applies_color_matrix(tmp_path):
     assert boosted_b < plain_b - 5   # blue channel attenuated
 
 
+def test_look_config_from_dict_merges_defaults_and_ignores_unknown():
+    from dcwb.ffmpeg_wrap import LookConfig
+    cfg = LookConfig.from_dict({"saturation": 1.2, "bogus": 9})
+    assert cfg.saturation == 1.2
+    assert cfg.gamma == LookConfig().gamma
+    assert not hasattr(cfg, "bogus")
+
+
+def test_cut_clip_look_boosts_saturation(tmp_path):
+    from dcwb.ffmpeg_wrap import cut_clip, extract_frame, LookConfig
+    from tests.fixtures.make_synthetic import make_clip
+    src = tmp_path / "src.mp4"
+    make_clip(src, (1.2, 1.0, 0.8), duration_sec=1.0)  # colored (R high, B low)
+
+    plain = tmp_path / "plain.mp4"
+    looked = tmp_path / "looked.mp4"
+    cut_clip(src, plain, 0.0, 0.5, encoder="libx264", bitrate_kbps=3000)
+    cut_clip(
+        src, looked, 0.0, 0.5, encoder="libx264", bitrate_kbps=3000,
+        look=LookConfig(saturation=1.6),
+    )
+
+    pf = extract_frame(plain, 0.2).reshape(-1, 3).mean(axis=0)
+    lf = extract_frame(looked, 0.2).reshape(-1, 3).mean(axis=0)
+    # saturation boost widens the R-B channel spread of a colored frame
+    assert (lf[0] - lf[2]) > (pf[0] - pf[2]) + 3
+
+
 def test_concat_clips_writes_playable_video(tmp_path):
     from dcwb.ffmpeg_wrap import concat_clips, probe_duration
     from tests.fixtures.make_synthetic import make_motion_clip
