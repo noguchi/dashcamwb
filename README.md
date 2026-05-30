@@ -27,6 +27,53 @@ uv sync --extra dev
 uv run dcwb --help
 ```
 
+## サブコマンド一覧
+
+`dcwb` は 9 個のサブコマンドを公開します。役割で 4 グループに分けると見通しが良いです。補正の核は **A×B の 2 レイヤを 1 つの 3×3 行列に合成**する設計で（A=カメラ固有キャスト／B=シーン光）、各コマンドはこのモデルのどこかに関わります。
+
+| サブコマンド | 役割 | 主な引数 |
+|------|------|------|
+| [`calibrate`](#1-キャリブレーション初回のみカメラ交換やファーム更新時に再実行) | **A レイヤ**を作る（初回/カメラ交換時のみ） | `--source` `--profiles-dir` `--max-samples-per-event` |
+| [`render`](#3-映像の補正cli-単発一括) | 1 イベント（6 カメラ）を A×B で補正 | `event_dir` `--out-root` `--pipeline-config` `--encoder` |
+| [`render-all`](#3-映像の補正cli-単発一括) | ディレクトリ内の全イベントを一括補正 | `--source` `--out-root` `--pipeline-config` |
+| [`verify`](#2-キャリブレーションの妥当性確認) | before / A only / A+B の 3 列 HTML を生成（QC） | `event_dir` `--out-html` `--pipeline-config` |
+| [`serve`](#4-ブラウザ-uiインタラクティブ運用) | ローカル Web UI（索引→レンダー・同期プレイヤー） | `--source` `--out-root` `--host` `--port` |
+| [`prune-recent`](#recentclips-の整理低モーションクリップの隔離) | 低モーション RecentClips を隔離（容量管理） | `--apply` `--purge` `--restore` `--retention-days` |
+| [`highlight-day`](#ドライブハイライト日別) | 日別ドライブ・ハイライトを生成（front のみ＋VLM 採点） | `--date` `--style` `--allow-no-ai` `--no-look` |
+| [`sync-insta360`](#insta360-との同期sync-insta360) | Insta360 乗車視点と Tesla front を時刻同期・横並び合成 | `insv...` `--recent` `--reference-gain` `--visual-offset` |
+| [`match-reference`](#参照カメラへの色合わせmatch-reference) | 参照カメラへの色合わせゲイン（B レイヤ差し替え）を算出 | `reference` `--recent` `--max-window` `--write` |
+
+### 補正の核（A×B モデル）
+
+- **`calibrate`** — 過去クリップの**昼間フレーム**からニュートラル候補ピクセルを統計マイニングし、カメラごとの対角ゲイン行列（A）を `profiles/<camera>.json` に永続化。オフラインで一度だけ。以降の全 render の土台。
+- **`render`** — 1 イベントに **A×B 行列**を適用して補正 mp4 を出力。B は既定で per-clip の gray-world 推定。`awb.reference_gain` 設定時は B を**参照ゲイン**に差し替え。出力先に `_pipeline.json`（採用ゲイン・最終行列のスナップショット）も残す。元データは不変。
+- **`render-all`** — `render` をディレクトリ配下の全イベントに回すバッチ版。1 イベント失敗しても継続。
+- **`verify`** — **before / A only / A+B** の 3 列 HTML を生成。render と同じ夜間 attenuation を適用するので、補正の効きをブラウザで比較できる（ファイルは書き換えない）。
+
+### インタラクティブ運用
+
+- **`serve`** — Flask UI でイベント索引→レンダーを操作（直列キュー `max_workers=1`）。**RecentClips はファイル名タイムスタンプの 10 分ギャップで擬似イベントに自動グルーピング**。`/sync/<date>` の同期プレイヤー（手動ナッジ）もここ。
+
+### 運用補助
+
+- **`prune-recent`** — front の埋め込み SEI テレメトリ（`gear_state`）で**走行=保護／全 PARK=候補**を判定（SEI 無しはモーションスコアにフォールバック）。`@dcwb_trash/` へ隔離（既定ドライラン、`--apply` で実行、`--restore` で復元）。新しいセグメントとイベント時間窓に入るものは保護。
+- **`highlight-day`** — `RecentClips/<date>` の **front だけ**からハイライトを作成。走行判定は SEI、「ハイライトとしての良さ」は LAN 上の **VLM が interest(0–10)** で採点（到達不能時は `--allow-no-ai` で MVP スコアラ）。抜粋には render と同じ **A×B 補正** ＋ creative「look」グレード（S 字・彩度・bt709 タグ）を重ねる。
+
+### 一般カメラとの合成（色合わせ）
+
+- **`match-reference`** — 参照（Insta360/iPhone 等）を Tesla front に映像差分で同期し、昼間・走行フレーム対から **B レイヤ差し替え用の参照ゲイン `(g_r,1,g_b)`** を算出。`--write` で `pipeline.json` の `awb.reference_gain` に書込み、以降の `render` / `sync-insta360` がそれを使う。目的は測色精度ではなく**合成時の知覚的整合**。
+- **`sync-insta360`** — `.insv` と Tesla front を**純粋な映像フレーム差分の相互相関**で同期（IMU/GPS 不使用）し、横並び合成 mp4 ＋ serve の同期プレイヤーを出力。`--reference-gain`（または pipeline.json の `awb.reference_gain`）で **色合わせを Tesla 側パネルに焼き込む**。
+
+### 典型ワークフロー
+
+```
+calibrate(初回) → serve で日々確認/補正 ┐
+                                        ├ render / render-all で一括出力
+prune-recent で容量管理 ────────────────┘
+highlight-day で日別ハイライト
+[一般カメラと合成する場合] match-reference --write → sync-insta360 --reference-gain
+```
+
 ## 4 ステップの基本ワークフロー
 
 ### 1. キャリブレーション（初回のみ／カメラ交換やファーム更新時に再実行）
@@ -154,7 +201,28 @@ uv run dcwb sync-insta360 <event.insv ...> --recent <YYYY-MM-DD> [--insta-flat <
 
 同期は 3 段階のハイブリッド方式で行います。まず `.insv` の `creation_time`(UTC) と front ファイル名(JST) で粗オフセットを算出し（①タイムスタンプ・アンカー）、次に Tesla の GPS course 由来ヨーレートと Insta360 IMU ジャイロの相互相関で精密化し（②クロスコリレーション）、最後に Web プレイヤーの手動ナッジで確定します（③）。相互相関の信頼度が低い場合（< 0.35）は①アンカーへフォールバックします。
 
-出力は `--out-root`（既定 `sync-work`）の `sync/<YYYY-MM-DD>/` に `combined-<date>.mp4`（横並び＋テレメトリ字幕）、`sync.json`（δ・信頼度・telemetry・パス）が並びます。`--insta-flat` を省略すると ffmpeg の `v360` フィルタで dfisheye→平面に自動リフレームします。Insta360 の 18GB 本体ファイルは末尾のトレーラ（IMU インデックス）だけを `seek` して読むため、フル転送は不要です。
+出力は `--out-root`（既定 `sync-work`）の `sync/<YYYY-MM-DD>/` に `combined-<date>.mp4`（横並び＋テレメトリ字幕）、`sync.json`（δ・信頼度・telemetry・パス）が並びます。`--insta-flat` を省略すると ffmpeg の `v360` フィルタで dfisheye→平面に自動リフレームします。
+
+`--reference-gain <R> <G> <B>` を渡すと（または `--pipeline-config` の `awb.reference_gain` が設定されていれば）、Tesla 側パネルに `diag(reference_gain) @ front_A` を 1 パスで焼き込み、合成を乗車視点の発色に揃えます（`match-reference` の出力。明示指定が pipeline.json より優先）。未指定なら従来どおり生の front をそのまま並べます。Insta360 の 18GB 本体ファイルは末尾のトレーラ（IMU インデックス）だけを `seek` して読むため、フル転送は不要です。
+
+## 参照カメラへの色合わせ（`match-reference`）
+
+一般カメラ（Insta360 / iPhone 等）の映像と Tesla 6 カメラ映像を合成しても違和感が出ないよう、補正の **B レイヤ（シーン光）を「参照カメラとのマッチゲイン」に差し替える**機能です。参照を Tesla front に映像差分で時刻同期し、昼間・走行中のフレーム対から「A 適用後 Tesla」と「参照」の Shades-of-Gray を取り、その比の幾何平均を参照ゲイン `(g_r, 1, g_b)` として算出します。目的は測色的正確さ（true D65）ではなく**合成時の知覚的整合**です（参照が較正済み基準でなくてよい）。
+
+設計仕様: [`docs/superpowers/specs/2026-05-31-reference-camera-match-gain-design.md`](docs/superpowers/specs/2026-05-31-reference-camera-match-gain-design.md) / [`docs/adr/0001-consumer-camera-reference-color-matching.md`](docs/adr/0001-consumer-camera-reference-color-matching.md)
+
+```bash
+# 算出して標準出力（人間可読 + JSON 1 行）。--write で pipeline.json に書き込む
+uv run dcwb match-reference <reference.insv|flat.mp4> --recent <YYYY-MM-DD> [--samples 10] [--max-window 600] [--write]
+# その後 render/render-all すると 6 カメラ・全クリップが参照トーンに揃う
+uv run dcwb render <event_dir> --pipeline-config pipeline.<YYYY-MM-DD>.json
+# Insta360 との横並び合成にも同じ色合わせを焼き込める（下記）
+uv run dcwb sync-insta360 <reference.insv> --recent <YYYY-MM-DD> --reference-gain <R> <G> <B>
+```
+
+算出した `awb.reference_gain` は**シーン／光源依存**の値です。汎用デフォルトではなく、**合成対象のドライブごとの `pipeline.json` に置く**運用を想定しています（`match-reference --write` で生成）。`reference_gain` が未設定（`null`）なら **従来どおり**の per-clip gray-world 推定にフォールバックし、既存挙動は一切変わりません。参照ゲインが妥当域（`gain_min`/`gain_max`）外なら render の既存安全網で B を破棄して A のみになります。
+
+`--max-window`（既定 600 秒）は解析窓を参照先頭からこの長さに制限します。30 分級の `.insv` をネットワークマウント越しに**全長リフレーム／全 front 連結すると現実的でない**ため、先頭の数百秒（昼間・走行中なら十分安定）だけで算出します。
 
 ## 設定 (`pipeline.json`)
 
@@ -170,7 +238,8 @@ uv run dcwb sync-insta360 <event.insv ...> --recent <YYYY-MM-DD> [--insta-flat <
     "saturation_low": 0.03,
     "gain_min": 0.7,
     "gain_max": 1.5,
-    "night_attenuation": 0.5
+    "night_attenuation": 0.5,
+    "reference_gain": null
   },
   "highlight_ai": {
     "endpoint": "http://galleria.local:1234/v1",
@@ -203,6 +272,7 @@ uv run dcwb sync-insta360 <event.insv ...> --recent <YYYY-MM-DD> [--insta-flat <
 | `saturation_high` / `saturation_low` | Shades-of-Gray で除外する飽和上下限 |
 | `gain_min` / `gain_max` | B レイヤのゲインがこの範囲外なら B を破棄して A のみで補正 |
 | `night_attenuation` | 夜間判定時に B レイヤを 1.0 に向けて線形減衰させる係数 |
+| `reference_gain` | `[g_r, g_g, g_b]` を設定すると B レイヤを参照カメラのマッチゲインに差し替え（6 カメラ・全クリップ一律）。`null` で従来の per-clip 推定。`match-reference --write` で生成 |
 | `highlight_ai.endpoint` / `.model` | ハイライト選定に使う VLM の OpenAI 互換エンドポイントとモデル ID |
 | `highlight_ai.frames_per_clip` / `.frame_max_edge` | 1 クリップから VLM に送るフレーム数と長辺リサイズ上限(px) |
 | `highlight_ai.interest_min` | この `interest` 未満のクリップは選定から除外 |

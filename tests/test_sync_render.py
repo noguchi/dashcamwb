@@ -29,6 +29,30 @@ def test_render_sidebyside_hstacks_with_subs(tmp_path):
     assert 2.5 < probe_duration(dst) < 3.5
 
 
+def test_render_sidebyside_applies_right_matrix(tmp_path):
+    """A right_matrix is a colorchannelmixer applied only to the right (Tesla)
+    panel before hstack — used to bake the reference match gain into the composite."""
+    import numpy as np
+    from dcwb.matrix import from_diag
+    from dcwb.ffmpeg_wrap import extract_frame
+    from tests.fixtures.make_synthetic import make_clip
+
+    left = tmp_path / "insta.mp4"; right = tmp_path / "tesla.mp4"
+    make_clip(left, (1.0, 1.0, 1.0), duration_sec=2.0, width=320, height=240)
+    make_clip(right, (1.0, 1.0, 1.0), duration_sec=2.0, width=320, height=240)  # neutral gray
+    dst = tmp_path / "combined.mp4"
+    render_sidebyside(left, right, dst, left_start=0.0, right_start=0.0,
+                      duration=1.5, encoder="libx264", bitrate_kbps=2000, panel_h=240,
+                      right_matrix=from_diag(1.4, 1.0, 0.6))  # warm-boost the right panel
+    img = extract_frame(dst, t=0.5)
+    w = img.shape[1]
+    left_px = img[:, w // 4].reshape(-1, 3).mean(axis=0)
+    right_px = img[:, 3 * w // 4].reshape(-1, 3).mean(axis=0)
+    # left panel stays neutral; right panel is warmed (R >> B)
+    assert abs(float(left_px[0]) - float(left_px[2])) < 15
+    assert float(right_px[0]) - float(right_px[2]) > 60
+
+
 _HAS_V360 = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
     capture_output=True, text=True).stdout.find(" v360 ") != -1
 
