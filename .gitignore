@@ -5,6 +5,7 @@
 corrected/
 logs/
 calibration_report.html
+sync-work/
 
 # Local development worktrees
 .worktrees/

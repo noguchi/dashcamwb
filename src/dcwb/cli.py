@@ -94,6 +94,8 @@ def _build_parser() -> argparse.ArgumentParser:
     py.add_argument("--out-root", type=Path, default=Path("sync-work"))
     py.add_argument("--encoder", default="h264_videotoolbox")
     py.add_argument("--bitrate-kbps", type=int, default=12000)
+    py.add_argument("--max-duration", type=float, default=None,
+                    help="Cap the rendered/correlated window length (seconds) for speed")
 
     return p
 
@@ -296,16 +298,151 @@ def _cmd_highlight_day(args) -> int:
 
 
 def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
-                      encoder, bitrate_kbps) -> int:
-    """Orchestrate Insta360<->Tesla sync. Body implemented in the follow-up task."""
-    raise NotImplementedError("run_sync_insta360 body is implemented in Task 12b")
+                      encoder, bitrate_kbps, max_duration=None) -> int:
+    """Orchestrate Insta360<->Tesla sync: anchor by creation_time, refine by
+    cross-correlating Tesla yaw-rate against an auto-selected Insta360 gyro axis,
+    then render a side-by-side combined.mp4 with a telemetry overlay + manifest."""
+    import numpy as np
+    from datetime import timedelta
+    from dcwb import insta360
+    from dcwb import sync as S
+    from dcwb.telemetry import iter_segment_frames
+    from dcwb.ffmpeg_wrap import (probe_duration, concat_clips, render_sidebyside,
+                                  reframe_insv)
+
+    insv = [Path(p) for p in insv]
+    out_root = Path(out_root)
+    rate = 50.0
+
+    # --- absolute window from insv ---
+    start_jst = insta360.to_jst(insta360.read_creation_time(insv[0]))
+    insv_total = sum(probe_duration(p) for p in insv)
+    end_jst = start_jst + timedelta(seconds=insv_total)
+    print(f"[sync] insta start {start_jst.isoformat()} dur {insv_total:.0f}s", file=sys.stderr)
+
+    # --- Tesla front clips overlapping the window ---
+    day_dir = Path(source) / "RecentClips" / recent
+    fronts = S.select_front_clips(day_dir, start_jst, end_jst)
+    if not fronts:
+        print(f"[sync] no Tesla front clips overlap in {day_dir}", file=sys.stderr)
+        return 1
+    print(f"[sync] {len(fronts)} Tesla front clips", file=sys.stderr)
+
+    # --- Tesla epoch-relative motion series (epoch = insta start_jst) ---
+    t_abs, head, accx, speed, steer, gear = [], [], [], [], [], []
+    for fp in fronts:
+        cs = S._front_start(fp.name)
+        frames = list(iter_segment_frames(fp))
+        if not frames:
+            continue
+        dur = probe_duration(fp)
+        fps = len(frames) / dur if dur > 0 else 36.0
+        base = (cs - start_jst).total_seconds()
+        for f in frames:
+            t_abs.append(base + f.frame_index / fps)
+            head.append(f.heading_deg); accx.append(f.accel_x)
+            speed.append(f.speed_mps); steer.append(f.steering_deg); gear.append(f.gear)
+    t_abs = np.asarray(t_abs)
+    head_unwrapped = np.degrees(np.unwrap(np.radians(np.asarray(head))))
+    gt, head_u = S.resample_uniform(t_abs, head_unwrapped, rate)
+    _, accx_u = S.resample_uniform(t_abs, np.asarray(accx), rate)
+    tesla_yaw = np.gradient(head_u, 1.0 / rate)
+    tesla = S.MotionSeries(t=gt, yaw_rate=tesla_yaw, accel_x=accx_u)
+
+    # --- Insta360 IMU series (epoch-relative; t_s is seconds into recording) ---
+    imu = insta360.read_imu(insv[0])
+    it = np.asarray([s.t_s for s in imu])
+    gxyz = {ax: np.asarray([s.gyro[i] for s in imu]) for i, ax in enumerate("xyz")}
+    iax = np.asarray([s.accel[0] for s in imu])
+    igt, _ = S.resample_uniform(it, gxyz["x"], rate)
+    gyro_u = {ax: S.resample_uniform(it, gxyz[ax], rate)[1] for ax in "xyz"}
+    accx_iu = S.resample_uniform(it, iax, rate)[1]
+
+    # --- axis+sign search: which gyro component best matches Tesla yaw-rate ---
+    max_lag = int(60.0 * rate)
+    best = (None, -2.0, 0)  # (name, peak, lag)
+    for ax in "xyz":
+        for sign in (1.0, -1.0):
+            lag, peak = S.normalized_xcorr(tesla_yaw, sign * gyro_u[ax], max_lag)
+            if peak > best[1]:
+                best = (f"{'+' if sign > 0 else '-'}g{ax}", peak, lag)
+    axis_name, axis_peak, _ = best
+    # axis_name is like "+gz" / "-gx"; recover the sign and the x/y/z letter.
+    ax_letter = axis_name[-1]
+    chosen = (1.0 if axis_name[0] == "+" else -1.0) * gyro_u[ax_letter]
+    print(f"[sync] insta yaw axis = {axis_name} (peak {axis_peak:.3f})", file=sys.stderr)
+
+    insta = S.MotionSeries(t=igt, yaw_rate=chosen, accel_x=accx_iu)
+    res = S.compute_offset(tesla, insta, anchor_guess=0.0, window_s=60.0, rate_hz=rate)
+    print(f"[sync] delta_s={res.delta_s:.3f} confidence={res.confidence:.3f} "
+          f"signal={res.signal}", file=sys.stderr)
+
+    # --- render window (capped by max_duration) ---
+    out_dir = out_root / "sync" / recent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    enc = encoder
+    cap = max_duration if max_duration else min(insv_total, 600.0)
+
+    # Tesla concat: only the clips needed to cover the cap, to keep it fast.
+    tesla_cat = out_dir / "tesla-concat.mp4"
+    n_clips = min(len(fronts), max(1, int(cap // 60) + 2))
+    concat_clips(fronts[:n_clips], tesla_cat, encoder=enc, bitrate_kbps=bitrate_kbps)
+
+    # Insta display: provided flat export, else v360 reframe of the capped window.
+    if insta_flat:
+        display = Path(insta_flat)
+    else:
+        display = out_dir / "insta-flat.mp4"
+        reframe_insv(insv[0], display, out_w=1280, out_h=720,
+                     encoder=enc, bitrate_kbps=bitrate_kbps,
+                     start=0.0, duration=cap)
+
+    # Telemetry rows (epoch-relative, sampled ~1 Hz over the cap). Resample the
+    # raw per-frame speed/steer onto the same uniform grid as the headings.
+    speed_u = S.resample_uniform(t_abs, np.asarray(speed), rate)[1]
+    steer_u = S.resample_uniform(t_abs, np.asarray(steer), rate)[1]
+    rows = []
+    step = max(1, int(rate))
+    for k in range(0, len(gt), step):
+        if gt[k] > cap:
+            break
+        rows.append((float(gt[k]), float(speed_u[k]), float(steer_u[k]), "DRIVE"))
+    ass = out_dir / "telemetry.ass"
+    ass.write_text(S.telemetry_ass(rows, play_w=2560, play_h=720))
+
+    # Alignment trims. tesla_concat local t=0 is fronts[0] start; the insta display
+    # local t=0 is the recording start. delta_s maps the insta timeline onto the
+    # tesla timeline (epoch = insta start). tesla0 is fronts[0] start relative to
+    # that epoch (negative when Tesla leads, as it does here: 17:17:04 < 17:17:57).
+    # insta_lead = how much the insta display must be advanced to line up with the
+    # tesla concat. Exact frame-sign is refined by the web player nudge (next task).
+    tesla0 = (S._front_start(fronts[0].name) - start_jst).total_seconds()
+    insta_lead = res.delta_s + tesla0
+    left_start = max(0.0, insta_lead)
+    right_start = max(0.0, -insta_lead)
+    print(f"[sync] tesla0={tesla0:.3f} insta_lead={insta_lead:.3f} "
+          f"left_start={left_start:.3f} right_start={right_start:.3f}", file=sys.stderr)
+
+    combined = out_dir / f"combined-{recent}.mp4"
+    render_sidebyside(display, tesla_cat, combined,
+                      left_start=left_start, right_start=right_start,
+                      duration=cap, ass_path=ass, encoder=enc,
+                      bitrate_kbps=bitrate_kbps, panel_h=720)
+
+    manifest = S.write_sync_manifest(
+        out_dir, res, insta_display=str(display), tesla_concat=str(tesla_cat),
+        combined=str(combined), date=recent, telemetry=rows)
+    print(f"[sync] wrote {combined}", file=sys.stderr)
+    print(f"[sync] manifest {manifest}", file=sys.stderr)
+    return 0
 
 
 def _cmd_sync_insta360(args) -> int:
     return run_sync_insta360(
         insv=args.insv, recent=args.recent, insta_flat=args.insta_flat,
         source=args.source, out_root=args.out_root,
-        encoder=args.encoder, bitrate_kbps=args.bitrate_kbps)
+        encoder=args.encoder, bitrate_kbps=args.bitrate_kbps,
+        max_duration=args.max_duration)
 
 
 def main(argv: list[str] | None = None) -> int:

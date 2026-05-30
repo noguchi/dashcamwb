@@ -274,9 +274,14 @@ def reframe_insv(
     insv: Path, dst: Path, yaw: float = 0.0, pitch: float = -10.0,
     out_w: int = 1920, out_h: int = 1080, h_fov: float = 100.0, v_fov: float = 60.0,
     encoder: str = "h264_videotoolbox", bitrate_kbps: int = 12000,
+    start: float = 0.0, duration: float | None = None,
 ) -> None:
     """Dual-fisheye .insv -> flat ride-view via v360. Front lens = stream 0,
-    back lens = stream 1; hstack into a dual-fisheye frame then project."""
+    back lens = stream 1; hstack into a dual-fisheye frame then project.
+
+    When ``duration`` is set, the input is fast-seeked/trimmed via input-side
+    ``-ss``/``-t`` (before ``-i``) so only that window is decoded and reframed.
+    """
     encoder = resolve_encoder(encoder)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
@@ -287,8 +292,13 @@ def reframe_insv(
         f"[df]v360=dfisheye:flat:yaw={yaw}:pitch={pitch}:"
         f"h_fov={h_fov}:v_fov={v_fov}:w={out_w}:h={out_h}[outv]"
     )
+    trim = []
+    if duration is not None:
+        # Input-side trim (before -i): fast seek + cap window length.
+        trim = ["-ss", f"{start}", "-t", f"{duration}"]
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        *trim,
         "-i", str(insv),
         "-filter_complex", graph, "-map", "[outv]", "-an",
         "-c:v", encoder, "-b:v", f"{bitrate_kbps}k",
