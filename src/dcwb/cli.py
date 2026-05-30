@@ -111,6 +111,9 @@ def _build_parser() -> argparse.ArgumentParser:
     py.add_argument("--start-offset", type=float, default=0.0,
                     help="Begin the rendered window this many seconds into the "
                          "Insta360 recording (skip parked footage at the start)")
+    py.add_argument("--visual-offset", type=float, default=0.0,
+                    help="Extra seconds added to the Tesla lead to correct the "
+                         "creation_time anchor (Insta video v -> Tesla epoch v+offset)")
 
     return p
 
@@ -312,13 +315,49 @@ def _cmd_highlight_day(args) -> int:
     return 0
 
 
+def _detect_visual_offset(insv, tesla_cat, anchor_tesla_lead, insv_total,
+                          fps=4.0, win=240.0, search=60.0):
+    """Time-align the two videos by WHOLE-FRAME MOTION only (no telemetry/IMU).
+
+    Builds the frame-difference envelope (a parked->moving onset signal) of the
+    Insta forward fisheye and the Tesla front camera over the start-of-drive
+    region and cross-correlates them. Returns ``(offset_s, peak)`` where a
+    physical instant at Insta video time ``v`` occurs at Tesla epoch ``v+offset``
+    (epoch = Insta creation_time). ``peak`` is the normalized correlation score.
+    """
+    import numpy as np
+    from dcwb.ffmpeg_wrap import frame_diff_envelope
+    from dcwb import sync as S
+
+    win = float(min(win, insv_total))
+    ti, di = frame_diff_envelope(insv, fps=fps, start=0.0, duration=win,
+                                 stream="0:v:0")
+    tdur = win + anchor_tesla_lead + search + 10.0
+    tc, dc = frame_diff_envelope(tesla_cat, fps=fps, start=0.0, duration=tdur,
+                                 stream="0:v:0")
+    if len(di) < 10 or len(dc) < 10:
+        return 0.0, 0.0
+    te = tc - anchor_tesla_lead                       # Tesla epoch time
+    ai = np.log1p(np.clip(di, 0.0, None))             # compress spikes
+    at = np.log1p(np.clip(dc, 0.0, None))
+    g = np.arange(0.0, max(win - 5.0, 1.0), 1.0 / fps)
+    aii = np.interp(g, ti, ai, left=0.0, right=0.0)
+    ati = np.interp(g, te, at, left=0.0, right=0.0)
+    lag, peak = S.normalized_xcorr(aii, ati, max_lag=int(search * fps))
+    return lag / fps, float(peak)
+
+
 def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                       encoder, bitrate_kbps, max_duration=None,
                       insta_yaw=180.0, insta_pitch=20.0, insta_roll=180.0,
-                      insta_hfov=110.0, insta_vfov=70.0, start_offset=0.0) -> int:
-    """Orchestrate Insta360<->Tesla sync: anchor by creation_time, refine by
-    cross-correlating Tesla yaw-rate against an auto-selected Insta360 gyro axis,
-    then render a side-by-side combined.mp4 with a telemetry overlay + manifest."""
+                      insta_hfov=110.0, insta_vfov=70.0, start_offset=0.0,
+                      visual_offset=0.0) -> int:
+    """Orchestrate Insta360<->Tesla sync. A coarse anchor comes from file
+    timestamps (Insta creation_time vs Tesla front filenames); the fine
+    alignment is PURELY VISUAL — the moment the car starts moving is detected by
+    whole-frame motion (frame differencing) in both videos and cross-correlated
+    (no accelerometer/gyro/GPS/speed used for sync). Renders a side-by-side
+    combined.mp4 with a Tesla telemetry overlay + a manifest for the web player."""
     import numpy as np
     from datetime import timedelta
     from dcwb import insta360
@@ -345,13 +384,8 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
         return 1
     print(f"[sync] {len(fronts)} Tesla front clips", file=sys.stderr)
 
-    # --- Tesla epoch-relative samples (epoch = insta start_jst) ---
-    # NOTE: heading_deg is a dead field in this firmware (all zeros), so the
-    # turn signal is derived from GPS course (lat/lon gradient), gated to moving
-    # frames. Even then it only reaches peak ~0.16, so auto fine-sync genuinely
-    # does not lock on this data; the trustworthy alignment is the timestamp
-    # anchor (see below) and the xcorr residual is only applied when confident.
-    t_abs, accx, speed, steer, gear, lat, lon = [], [], [], [], [], [], []
+    # --- Tesla SEI samples for the telemetry overlay ONLY (not used for sync) ---
+    t_abs, speed, steer, gear = [], [], [], []
     for fp in fronts:
         cs = S._front_start(fp.name)
         frames = list(iter_segment_frames(fp))
@@ -362,111 +396,72 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
         base = (cs - start_jst).total_seconds()
         for f in frames:
             t_abs.append(base + f.frame_index / fps)
-            accx.append(f.accel_x); speed.append(f.speed_mps)
-            steer.append(f.steering_deg); gear.append(f.gear)
-            lat.append(f.lat); lon.append(f.lon)
+            speed.append(f.speed_mps); steer.append(f.steering_deg)
+            gear.append(f.gear)
     t_abs = np.asarray(t_abs)
-    # np.interp (inside resample_uniform) silently returns garbage when its xp
-    # (time) array is not strictly increasing. Overlapping Tesla front-clip
-    # boundaries can make t_abs non-monotonic, so sort all parallel arrays by
-    # t_abs together and drop non-increasing duplicate timestamps.
-    _n0 = len(t_abs)
-    _was_mono = bool(np.all(np.diff(t_abs) > 0)) if _n0 > 1 else True
+    # np.interp needs strictly-increasing time; overlapping front-clip boundaries
+    # can break monotonicity, so sort + dedup all parallel arrays together.
     order = np.argsort(t_abs, kind="stable")
     t_abs = t_abs[order]
-    accx = np.asarray(accx)[order]; speed = np.asarray(speed)[order]
-    steer = np.asarray(steer)[order]; gear = np.asarray(gear)[order]
-    lat = np.asarray(lat)[order]; lon = np.asarray(lon)[order]
+    speed = np.asarray(speed)[order]; steer = np.asarray(steer)[order]
+    gear = np.asarray(gear)[order]
     keep = np.concatenate(([True], np.diff(t_abs) > 1e-6))
-    t_abs = t_abs[keep]; accx = accx[keep]; speed = speed[keep]
-    steer = steer[keep]; gear = gear[keep]; lat = lat[keep]; lon = lon[keep]
-    print(f"[sync] tesla samples {_n0} -> {len(t_abs)} "
-          f"(already monotonic: {_was_mono})", file=sys.stderr)
+    t_abs = t_abs[keep]; speed = speed[keep]; steer = steer[keep]; gear = gear[keep]
+    gt, speed_u = S.resample_uniform(t_abs, speed, rate)
+    _, steer_u = S.resample_uniform(t_abs, steer, rate)
+    # Gear is categorical — map each grid point to the nearest real sample.
+    gear_idx = np.clip(np.searchsorted(t_abs, gt), 0, len(gear) - 1)
 
-    # Tesla turn signal from GPS course, gated to moving frames.
-    gt, latu = S.resample_uniform(t_abs, lat, rate)
-    _, lonu = S.resample_uniform(t_abs, lon, rate)
-    _, spdu = S.resample_uniform(t_abs, speed, rate)
-    dlat = np.gradient(latu)
-    dlon = np.gradient(lonu * np.cos(np.radians(latu)))
-    course = np.degrees(np.unwrap(np.arctan2(dlon, dlat)))
-    tesla_yawmag = np.abs(np.gradient(course, 1.0 / rate))
-    tesla_yawmag[spdu < 2.0] = 0.0          # course is noise when slow/stopped
-
-    # --- Insta360 gyro magnitude on the SAME epoch grid ---
-    imu = insta360.read_imu(insv[0])
-    it = np.asarray([s.t_s for s in imu]); it = it - it[0]   # epoch ~ insta video start
-    gx = np.asarray([s.gyro[0] for s in imu])
-    gy = np.asarray([s.gyro[1] for s in imu])
-    gz = np.asarray([s.gyro[2] for s in imu])
-    # Monotonic guard for the IMU clock (should already be monotonic, guard anyway).
-    _imu_mono = bool(np.all(np.diff(it) > 0)) if len(it) > 1 else True
-    iorder = np.argsort(it, kind="stable")
-    it = it[iorder]; gx = gx[iorder]; gy = gy[iorder]; gz = gz[iorder]
-    ikeep = np.concatenate(([True], np.diff(it) > 1e-6))
-    it = it[ikeep]; gx = gx[ikeep]; gy = gy[ikeep]; gz = gz[ikeep]
-    print(f"[sync] imu samples {len(it)} (already monotonic: {_imu_mono})", file=sys.stderr)
-    igt, gxu = S.resample_uniform(it, gx, rate)
-    _, gyu = S.resample_uniform(it, gy, rate)
-    _, gzu = S.resample_uniform(it, gz, rate)
-    gyro_mag = np.sqrt(gxu ** 2 + gyu ** 2 + gzu ** 2)
-
-    # --- timestamp anchor (the trustworthy default) ---
+    # --- coarse anchor from file timestamps only (no motion data) ---
     # tesla_concat local t=0 is fronts[0] start; insta local t=0 is start_jst.
-    tesla0 = (S._front_start(fronts[0].name) - start_jst).total_seconds()  # ~ -53 (tesla leads)
-    anchor_tesla_lead = -tesla0                                            # ~ +53 seconds
+    tesla0 = (S._front_start(fronts[0].name) - start_jst).total_seconds()  # ~ -53
+    anchor_tesla_lead = -tesla0                                            # ~ +53
 
-    # --- residual xcorr correction, applied ONLY if confident and small ---
-    # Both gt and igt are epoch-relative seconds, so put both magnitude signals
-    # on a common overlap grid and correlate with a SMALL max_lag (+/-15 s); a
-    # perfect alignment then gives lag~0.
-    lo = max(gt[0], igt[0]); hi = min(gt[-1], igt[-1])
-    grid = np.arange(lo, hi, 1.0 / rate)
-    tv = np.interp(grid, gt, tesla_yawmag)
-    iv = np.interp(grid, igt, gyro_mag)
-    lag, peak = S.normalized_xcorr(tv, iv, max_lag=int(15 * rate))
-    residual = lag / rate
-    CONF_MIN = 0.35
-    if peak < CONF_MIN or abs(residual) > 15.0:
-        residual = 0.0
-        method = "anchor"
-    else:
-        method = "anchor+xcorr"
-    tesla_lead = anchor_tesla_lead + residual
-    print(f"[sync] anchor_tesla_lead={anchor_tesla_lead:.1f}s residual={residual:.2f}s "
-          f"peak={peak:.3f} method={method} -> tesla_lead={tesla_lead:.1f}s", file=sys.stderr)
-
-    res = S.SyncResult(delta_s=tesla_lead, confidence=float(peak),
-                       signal="gps_yaw|gyro", anchor_guess=anchor_tesla_lead)
-
-    # --- render window: [start_offset, start_offset+cap] in INSTA video time ---
     out_dir = out_root / "sync" / recent
     out_dir.mkdir(parents=True, exist_ok=True)
     enc = encoder
     cap = max_duration if max_duration else min(insv_total, 600.0)
     start_offset = max(0.0, float(start_offset))
 
-    # Alignment. At display-local time L, both panels show epoch time
-    # (start_offset + L). Insta-flat local 0 = epoch start_offset; Tesla concat
-    # local 0 = epoch tesla0 (= -anchor_tesla_lead). So the Tesla (right) input is
-    # trimmed by (start_offset + tesla_lead); the Insta (left) input by 0.
+    # --- Tesla concat (render once; covers visual detection + final window) ---
+    tesla_cat = out_dir / "tesla-concat.mp4"
+    cover = start_offset + anchor_tesla_lead + cap + 90.0
+    n_clips = min(len(fronts), max(1, int(cover // 60) + 2))
+    concat_clips(fronts[:n_clips], tesla_cat, encoder=enc, bitrate_kbps=bitrate_kbps)
+
+    # --- VISUAL fine-alignment: detect the moment the car starts moving in both
+    # videos (whole-frame motion / frame differencing) and align by it. No
+    # accelerometer/gyro/GPS/speed is used for sync. --visual-offset overrides. ---
+    if visual_offset:
+        vis_off, vis_peak, method = float(visual_offset), float("nan"), "manual"
+    else:
+        vis_off, vis_peak = _detect_visual_offset(
+            insv[0], tesla_cat, anchor_tesla_lead, insv_total)
+        method = "visual"
+        if vis_peak < 0.30:        # weak lock -> keep the bare timestamp anchor
+            print(f"[sync] WARNING weak visual lock (peak={vis_peak:.3f}); "
+                  f"using timestamp anchor only", file=sys.stderr)
+            vis_off, method = 0.0, "anchor(weak-visual)"
+    tesla_lead = anchor_tesla_lead + vis_off
+    print(f"[sync] anchor_tesla_lead={anchor_tesla_lead:.1f}s visual_offset={vis_off:.1f}s "
+          f"(peak={vis_peak:.3f}, {method}) -> tesla_lead={tesla_lead:.1f}s", file=sys.stderr)
+
+    # --- alignment trims. At display-local L the Insta panel shows epoch
+    # (start_offset + L); the same instant is Tesla epoch (start_offset+L+vis_off).
+    # Tesla concat local 0 = epoch -anchor_tesla_lead, so trim Tesla by
+    # (start_offset + tesla_lead) and Insta by 0. ---
     right_start = start_offset + tesla_lead
     left_start = 0.0
-    if right_start < 0:                 # only if Tesla actually trails Insta
+    if right_start < 0:
         left_start = -right_start
         right_start = 0.0
     print(f"[sync] start_offset={start_offset:.1f}s left_start={left_start:.3f} "
           f"right_start={right_start:.3f}", file=sys.stderr)
-    # The player seeks tesla.currentTime = insta.currentTime + delta, so the
-    # manifest delta is the Tesla trim (right_start), not the raw tesla_lead.
-    res.delta_s = right_start
+    # Player seeks tesla.currentTime = insta.currentTime + delta = right_start.
+    res = S.SyncResult(delta_s=right_start, confidence=float(vis_peak),
+                       signal="visual-motion", anchor_guess=anchor_tesla_lead)
 
-    # Tesla concat: enough clips to cover [0, right_start + cap].
-    tesla_cat = out_dir / "tesla-concat.mp4"
-    n_clips = min(len(fronts), max(1, int((right_start + cap) // 60) + 2))
-    concat_clips(fronts[:n_clips], tesla_cat, encoder=enc, bitrate_kbps=bitrate_kbps)
-
-    # Insta display: provided flat export, else v360 reframe of the window.
+    # --- Insta display: provided flat export, else v360 reframe of the window ---
     if insta_flat:
         display = Path(insta_flat)
     else:
@@ -477,21 +472,19 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                      encoder=enc, bitrate_kbps=bitrate_kbps,
                      start=start_offset, duration=cap)
 
-    # Telemetry (~1 Hz): at display-local L, show Tesla state at epoch
-    # (start_offset + L). gt is epoch-relative, so local = gt[k] - start_offset.
-    _, speed_u = S.resample_uniform(t_abs, speed, rate)
-    _, steer_u = S.resample_uniform(t_abs, steer, rate)
-    # Gear is categorical — map each gt grid point to the nearest real sample.
-    gear_idx = np.clip(np.searchsorted(t_abs, gt), 0, len(gear) - 1)
+    # --- telemetry overlay (~1 Hz). The Tesla panel at display-local L shows
+    # epoch (start_offset + vis_off + L), so label by
+    # local = gt[k] - start_offset - vis_off. ---
     rows = []
     step = max(1, int(rate))
     for k in range(0, len(gt), step):
-        local = gt[k] - start_offset
+        local = gt[k] - start_offset - vis_off
         if local < 0:
             continue
         if local > cap:
             break
-        rows.append((float(local), float(speed_u[k]), float(steer_u[k]), str(gear[gear_idx[k]])))
+        rows.append((float(local), float(speed_u[k]), float(steer_u[k]),
+                     str(gear[gear_idx[k]])))
     ass = out_dir / "telemetry.ass"
     ass.write_text(S.telemetry_ass(rows, play_w=2560, play_h=720))
 
@@ -517,7 +510,8 @@ def _cmd_sync_insta360(args) -> int:
         max_duration=args.max_duration,
         insta_yaw=args.insta_yaw, insta_pitch=args.insta_pitch,
         insta_roll=args.insta_roll, insta_hfov=args.insta_hfov,
-        insta_vfov=args.insta_vfov, start_offset=args.start_offset)
+        insta_vfov=args.insta_vfov, start_offset=args.start_offset,
+        visual_offset=args.visual_offset)
 
 
 def main(argv: list[str] | None = None) -> int:

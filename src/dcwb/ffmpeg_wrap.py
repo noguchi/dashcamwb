@@ -346,3 +346,41 @@ def concat_clips(
     ]
     _run_ffmpeg(cmd, tmp)
     tmp.replace(dst)
+
+
+def frame_diff_envelope(
+    path: Path,
+    *,
+    fps: float = 4.0,
+    width: int = 160,
+    height: int = 90,
+    start: float = 0.0,
+    duration: float | None = None,
+    stream: str = "0:v:0",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Mean absolute frame-to-frame difference of downscaled grayscale frames.
+
+    A pure-pixel whole-frame ego-motion proxy: ~0 while parked (static scene),
+    high while the camera/vehicle moves. Used to detect "the car starts moving"
+    and to time-align two videos without any telemetry/IMU. Returns
+    ``(times, diffs)`` numpy arrays (one diff per consecutive frame pair).
+    """
+    cmd = ["ffmpeg", "-v", "error"]
+    if start:
+        cmd += ["-ss", f"{start}"]
+    if duration is not None:
+        cmd += ["-t", f"{duration}"]
+    cmd += [
+        "-i", str(path), "-map", stream,
+        "-vf", f"fps={fps},scale={width}:{height},format=gray",
+        "-f", "rawvideo", "-",
+    ]
+    raw = subprocess.run(cmd, capture_output=True).stdout
+    fr = np.frombuffer(raw, dtype=np.uint8)
+    n = len(fr) // (width * height)
+    if n < 2:
+        return np.zeros(0), np.zeros(0)
+    fr = fr[: n * width * height].reshape(n, height * width).astype(np.float32)
+    d = np.abs(np.diff(fr, axis=0)).mean(axis=1)
+    t = start + np.arange(len(d)) / fps
+    return t, d
