@@ -1,5 +1,6 @@
 from __future__ import annotations
 import numpy as np
+from dataclasses import dataclass
 
 def unwrap_yaw_rate(headings_deg: np.ndarray, dt: float) -> np.ndarray:
     """deg/s yaw rate from a heading series, robust to 0/360 wraparound."""
@@ -32,3 +33,41 @@ def normalized_xcorr(a: np.ndarray, b: np.ndarray, max_lag: int):
         if score > best:
             best, best_lag = score, lag
     return best_lag, best
+
+
+@dataclass
+class MotionSeries:
+    t: np.ndarray        # absolute seconds, monotonic
+    yaw_rate: np.ndarray
+    accel_x: np.ndarray
+
+@dataclass
+class SyncResult:
+    delta_s: float       # insta.t[0]-tesla.t[0] + correlation lag; see note
+    confidence: float    # cross-correlation peak in [-1, 1]
+    signal: str          # "yaw_rate" or "accel_x"
+    anchor_guess: float
+
+def compute_offset(tesla: MotionSeries, insta: MotionSeries,
+                   anchor_guess: float, window_s: float, rate_hz: float) -> SyncResult:
+    """Refine the coarse anchor to a fine delta via cross-correlation.
+
+    delta_s is defined as (insta.t[0] - tesla.t[0]) plus the residual correlation
+    lag, i.e. the offset that maps the insta timeline onto the tesla timeline.
+    The rendering sign convention is calibrated against real data in the CLI task.
+    Tries yaw-rate first; falls back to accel_x when its correlation peak is weaker.
+    """
+    base = float(insta.t[0] - tesla.t[0])
+    max_lag = int((window_s + abs(anchor_guess)) * rate_hz)
+
+    def _corr(field: str):
+        _, ta = resample_uniform(tesla.t - tesla.t[0], getattr(tesla, field), rate_hz)
+        _, ia = resample_uniform(insta.t - insta.t[0], getattr(insta, field), rate_hz)
+        lag, peak = normalized_xcorr(ta, ia, max_lag=max_lag)
+        return base + lag / rate_hz, peak
+
+    delta_y, peak_y = _corr("yaw_rate")
+    delta_a, peak_a = _corr("accel_x")
+    if peak_y >= peak_a:
+        return SyncResult(delta_y, peak_y, "yaw_rate", anchor_guess)
+    return SyncResult(delta_a, peak_a, "accel_x", anchor_guess)

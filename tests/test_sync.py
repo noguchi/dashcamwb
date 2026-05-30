@@ -23,3 +23,18 @@ def test_normalized_xcorr_recovers_known_lag():
     best_lag, peak = normalized_xcorr(a, b, max_lag=100)
     assert best_lag == lag
     assert peak > 0.9
+
+from dcwb.sync import compute_offset, MotionSeries, SyncResult
+
+def test_compute_offset_recovers_injected_delta():
+    rate = 50.0
+    t = np.arange(0, 20, 1 / rate)
+    sig = np.sin(2 * np.pi * 0.2 * t) + 0.3 * np.sin(2 * np.pi * 0.05 * t)
+    tesla = MotionSeries(t=t, yaw_rate=sig, accel_x=np.zeros_like(sig))
+    delta_true = 2.0
+    insta = MotionSeries(t=t + delta_true, yaw_rate=sig, accel_x=np.zeros_like(sig))
+    res = compute_offset(tesla, insta, anchor_guess=1.5, window_s=5.0, rate_hz=rate)
+    assert isinstance(res, SyncResult)
+    assert abs(res.delta_s - delta_true) < 0.05
+    assert res.signal == "yaw_rate"
+    assert res.confidence > 0.8
