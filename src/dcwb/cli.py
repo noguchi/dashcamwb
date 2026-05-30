@@ -84,6 +84,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--no-white-balance", action="store_true", help="Do not apply A x B white-balance correction to excerpts")
     ph.add_argument("--no-look", action="store_true", help="Do not apply the creative look grade (S-curve + saturation) to excerpts")
 
+    py = sub.add_parser("sync-insta360",
+                        help="Sync an Insta360 ride-view with Tesla front clips")
+    py.add_argument("insv", nargs="+", type=Path)
+    py.add_argument("--recent", required=True, help="RecentClips date dir, YYYY-MM-DD")
+    py.add_argument("--insta-flat", type=Path, default=None,
+                    help="Reframed flat ride-view mp4 (else v360 auto-reframe)")
+    py.add_argument("--source", type=Path, default=Path("/mnt/sentryusb"))
+    py.add_argument("--out-root", type=Path, default=Path("sync-work"))
+    py.add_argument("--encoder", default="h264_videotoolbox")
+    py.add_argument("--bitrate-kbps", type=int, default=12000)
+
     return p
 
 def _cmd_calibrate(args) -> int:
@@ -284,6 +295,19 @@ def _cmd_highlight_day(args) -> int:
     return 0
 
 
+def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
+                      encoder, bitrate_kbps) -> int:
+    """Orchestrate Insta360<->Tesla sync. Body implemented in the follow-up task."""
+    raise NotImplementedError("run_sync_insta360 body is implemented in Task 12b")
+
+
+def _cmd_sync_insta360(args) -> int:
+    return run_sync_insta360(
+        insv=args.insv, recent=args.recent, insta_flat=args.insta_flat,
+        source=args.source, out_root=args.out_root,
+        encoder=args.encoder, bitrate_kbps=args.bitrate_kbps)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -295,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         "serve": _cmd_serve,
         "prune-recent": _cmd_prune_recent,
         "highlight-day": _cmd_highlight_day,
+        "sync-insta360": _cmd_sync_insta360,
     }[args.cmd](args)
 
 if __name__ == "__main__":
