@@ -64,3 +64,22 @@ def test_telemetry_ass_emits_timed_dialogue():
     assert "48 km/h" in ass            # 13.3 m/s -> 48 km/h
     assert "DRIVE" in ass
     assert "0:00:00.00" in ass         # first event start time
+
+import json as _json
+from dcwb.sync import write_sync_manifest, SyncResult
+
+def test_write_sync_manifest_roundtrip(tmp_path):
+    res = SyncResult(delta_s=2.13, confidence=0.91, signal="yaw_rate", anchor_guess=1.5)
+    out = write_sync_manifest(
+        tmp_path, res,
+        insta_display="/x/flat.mp4", tesla_concat="/x/tesla.mp4",
+        combined="/x/combined.mp4", date="2026-05-27",
+        telemetry=[(0.0, 13.3, 12.0, "DRIVE")],
+    )
+    data = _json.loads(out.read_text())
+    assert out.name == "sync.json"
+    assert data["delta_s"] == 2.13
+    assert data["confidence"] == 0.91
+    assert data["signal"] == "yaw_rate"
+    assert data["paths"]["combined"] == "/x/combined.mp4"
+    assert data["telemetry"][0] == [0.0, 13.3, 12.0, "DRIVE"]

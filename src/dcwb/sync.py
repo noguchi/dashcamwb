@@ -73,6 +73,7 @@ def compute_offset(tesla: MotionSeries, insta: MotionSeries,
     return SyncResult(delta_a, peak_a, "accel_x", anchor_guess)
 
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -126,3 +127,22 @@ def telemetry_ass(rows, play_w: int, play_h: int) -> str:
         text = f"{kmh} km/h   steer {steer:+.0f}\\N{gear}"
         lines.append(f"Dialogue: 0,{_ass_ts(t)},{_ass_ts(end)},tele,{text}")
     return header + "\n".join(lines) + "\n"
+
+
+def write_sync_manifest(out_dir: Path, result: SyncResult, *,
+                        insta_display: str, tesla_concat: str, combined: str,
+                        date: str, telemetry) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "date": date,
+        "delta_s": result.delta_s,
+        "confidence": result.confidence,
+        "signal": result.signal,
+        "anchor_guess": result.anchor_guess,
+        "paths": {"insta_display": insta_display, "tesla_concat": tesla_concat,
+                  "combined": combined},
+        "telemetry": [list(r) for r in telemetry],
+    }
+    path = out_dir / "sync.json"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    return path
