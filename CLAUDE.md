@@ -26,7 +26,7 @@ uv run dcwb render <event_dir>
 CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を公開）:
 `calibrate` / `render <event_dir>` / `verify <event_dir>` / `render-all --source <dir>` / `serve` / `prune-recent` / `highlight-day`。
 
-`highlight-day` は `RecentClips/<date>` の `front` カメラだけからドライブ記録向けハイライトを作る。テレメトリ（SEI の DRIVE/REVERSE）は「走った／停まった」だけを判定し、走行クリップの「ハイライトとしての良さ」は LAN 上の VLM が `interest`(0–10) で採点する（既定パス）。VLM 結果（`interest`/`scene_tags`/`caption`/`drive_quality`）は manifest にのみ記録し、字幕焼き込みはしない。VLM が到達不能なときは `--allow-no-ai` で MVP スコアラ（平均速度・速度変化・OpenCV の明るさ・画面変化量）にフォールバックする（指定なしならフレーム抽出前に中断）。`fast` と `cruise` の2スタイルがあり、出力 manifest には採用理由とスコア内訳・`skips` を必ず残す。VLM 境界は `vlm.py`、選定/キャッシュは `highlight.py`、設定は `pipeline.json` の `highlight_ai` セクション。詳細は `docs/superpowers/specs/2026-05-29-vlm-drive-highlight-design.md`。
+`highlight-day` は `RecentClips/<date>` の `front` カメラだけからドライブ記録向けハイライトを作る。テレメトリ（SEI の DRIVE/REVERSE）は「走った／停まった」だけを判定し、走行クリップの「ハイライトとしての良さ」は LAN 上の VLM が `interest`(0–10) で採点する（既定パス）。VLM 結果（`interest`/`scene_tags`/`caption`/`drive_quality`）は manifest にのみ記録し、字幕焼き込みはしない。VLM が到達不能なときは `--allow-no-ai` で MVP スコアラ（平均速度・速度変化・OpenCV の明るさ・画面変化量）にフォールバックする（指定なしならフレーム抽出前に中断）。`fast` と `cruise` の2スタイルがあり、出力 manifest には採用理由とスコア内訳・`skips` を必ず残す。出力は既定で `highlights/<date>/`（`--out-root`）に `highlight-<style>.mp4`・`highlight-<style>.json`・抜粋 `clips/`・`vlm-cache.json` が並ぶ。抜粋には render と同じ **A×B 白色補正行列**を適用し、さらに WB 後に creative「look」グレード（S字カーブ・彩度・ガンマ）を重ねて bt709 タグを焼く（Tesla のフラットな forensic 映像対策）。look は最終出力の concat フィルタ内で `setparams` により bt709 を確実にタグ付けする（出力 `-color_*` フラグだけでは効かない）。VLM 境界は `vlm.py`、選定/キャッシュは `highlight.py`、look は `ffmpeg_wrap.LookConfig`、設定は `pipeline.json` の `highlight_ai`／`look` セクション。詳細は `docs/superpowers/specs/2026-05-29-vlm-drive-highlight-design.md`。
 
 ## アーキテクチャ
 
@@ -69,4 +69,4 @@ CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を
 
 ## 設定 `pipeline.json`
 
-B レイヤのパラメータ（`awb.method`, `minkowski_p`, `samples_per_clip`, `saturation_high/low`, `gain_min/max`, `night_attenuation`）。`render`/`verify`/`serve` に `--pipeline-config` で差し替え可能。
+B レイヤのパラメータ（`awb.method`, `minkowski_p`, `samples_per_clip`, `saturation_high/low`, `gain_min/max`, `night_attenuation`）。`render`/`verify`/`serve` に `--pipeline-config` で差し替え可能。`prune` セクション（prune-recent 用）、`highlight_ai` セクション（VLM エンドポイント・サンプリングパラメータ）、`look` セクション（highlight の creative グレード: `scurve`/`saturation`/`gamma`/`tag_bt709`）も同じファイルに同居する。
