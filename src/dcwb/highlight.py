@@ -4,15 +4,65 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import math
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from dcwb.calibrate import JST
+from dcwb.daylight import TOKYO_LAT, TOKYO_LON, is_daytime
 from dcwb.ffmpeg_wrap import concat_clips, cut_clip, extract_frames, probe_duration
+from dcwb.profile import Profile
+from dcwb.render import compose_clip_matrix, estimate_scene_gain
 from dcwb.telemetry import SegmentTelemetry, read_segment_telemetry
 from dcwb.vlm import PROMPT_VERSION, ClipDescription, VlmConfig, encode_frame
+
+# Fallback B-layer params when no awb section is supplied (mirrors pipeline.json).
+DEFAULT_AWB = {
+    "samples_per_clip": 10,
+    "saturation_high": 0.97,
+    "saturation_low": 0.03,
+    "minkowski_p": 6,
+    "gain_min": 0.7,
+    "gain_max": 1.5,
+    "night_attenuation": 0.5,
+}
+
+
+def _wb_attenuation(
+    ts_str: str, night_attenuation: float, lat: float = TOKYO_LAT, lon: float = TOKYO_LON
+) -> float:
+    """1.0 for daytime clips, night_attenuation for night clips (unparseable -> 1.0)."""
+    try:
+        ts = datetime.strptime(ts_str, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=JST)
+    except ValueError:
+        return 1.0
+    return 1.0 if is_daytime(ts, lat=lat, lon=lon) else float(night_attenuation)
+
+
+def _clip_wb_matrix(clip: Path, ts_str: str, profile: Profile, awb: dict):
+    """Compose the A x B white-balance matrix for one source clip.
+
+    Returns (final_matrix, scene_gain, attenuation). Mirrors render_event's path:
+    estimate scene gain (B) over the clip, attenuate B at night, compose with the
+    camera profile (A), with the same gain-range fallback in compose_clip_matrix.
+    """
+    scene_gain = estimate_scene_gain(
+        clip, profile,
+        samples_per_clip=int(awb["samples_per_clip"]),
+        sat_high=float(awb["saturation_high"]),
+        sat_low=float(awb["saturation_low"]),
+        p=int(awb["minkowski_p"]),
+    )
+    attenuation = _wb_attenuation(ts_str, awb["night_attenuation"])
+    matrix = compose_clip_matrix(
+        profile, scene_gain,
+        gain_min=float(awb["gain_min"]),
+        gain_max=float(awb["gain_max"]),
+        attenuation=attenuation,
+    )
+    return matrix, scene_gain, attenuation
 
 
 @dataclass(frozen=True)
@@ -461,6 +511,9 @@ def highlight_day(
     use_cache: bool = True,
     selection: str = "mvp",
     on_progress=None,
+    profiles_dir: Path | None = None,
+    awb_cfg: dict | None = None,
+    white_balance: bool = True,
 ) -> HighlightResult:
     def phase_progress(phase: str):
         if on_progress is None:
@@ -514,21 +567,48 @@ def highlight_day(
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
         return HighlightResult(output_path, manifest_path, [], 0)
 
+    # White-balance (A x B) is applied per excerpt during the cut, mirroring
+    # render_event. Only the selected excerpts are corrected (not all candidates).
+    wb_profile: Profile | None = None
+    if white_balance and profiles_dir is not None:
+        front = profiles_dir / "front.json"
+        if front.exists():
+            wb_profile = Profile.from_json(front)
+        else:
+            print(f"[highlight] no front profile at {front}; skipping white balance", file=sys.stderr)
+    awb = awb_cfg or DEFAULT_AWB
+    wb_cache: dict[Path, tuple] = {}
+
     excerpts = plan_excerpts(scores, style, target_duration_sec=target_duration_sec)
     rendered: list[Path] = []
     manifest_clips: list[dict] = []
     for idx, excerpt in enumerate(excerpts, start=1):
         rendered_path = clip_out / f"{idx:03d}-{excerpt.ts_str}.mp4"
+        src_clip = excerpt.source.candidate.clip
+        matrix = None
+        wb_info = {"applied": False}
+        if wb_profile is not None:
+            if src_clip not in wb_cache:
+                wb_cache[src_clip] = _clip_wb_matrix(src_clip, excerpt.ts_str, wb_profile, awb)
+            matrix, scene_gain, attenuation = wb_cache[src_clip]
+            wb_info = {
+                "applied": True,
+                "scene_gain": [round(float(g), 6) for g in scene_gain],
+                "attenuation": round(float(attenuation), 4),
+                "final_matrix": matrix.tolist(),
+            }
         cut_clip(
-            excerpt.source.candidate.clip, rendered_path,
+            src_clip, rendered_path,
             excerpt.start_sec, excerpt.duration_sec,
-            encoder=encoder, bitrate_kbps=bitrate_kbps,
+            encoder=encoder, bitrate_kbps=bitrate_kbps, matrix=matrix,
         )
         rendered.append(rendered_path)
         if use_ai:
-            manifest_clips.append(_manifest_clip_ai(excerpt, source_root, rendered_path, cfg.model))
+            mc = _manifest_clip_ai(excerpt, source_root, rendered_path, cfg.model)
         else:
-            manifest_clips.append(_manifest_clip(excerpt, source_root, rendered_path, selection))
+            mc = _manifest_clip(excerpt, source_root, rendered_path, selection)
+        mc["white_balance"] = wb_info
+        manifest_clips.append(mc)
     if rendered:
         concat_clips(rendered, output_path, encoder=encoder, bitrate_kbps=bitrate_kbps)
     manifest = {
@@ -538,6 +618,7 @@ def highlight_day(
         "created_at": datetime.now(JST).isoformat(),
         "target_duration_sec": target_duration_sec or STYLE_CONFIGS[style].target_sec,
         "output": output_path.name,
+        "white_balance_enabled": wb_profile is not None,
         "clips": manifest_clips,
         "skips": skips,
         **ai_meta,

@@ -74,6 +74,29 @@ def test_cut_clip_writes_playable_excerpt(tmp_path):
     assert 0.4 <= probe_duration(dst) <= 1.2
 
 
+def test_cut_clip_applies_color_matrix(tmp_path):
+    import numpy as np
+    from dcwb.ffmpeg_wrap import cut_clip, extract_frame
+    from tests.fixtures.make_synthetic import make_clip
+    src = tmp_path / "src.mp4"
+    make_clip(src, (1.0, 1.0, 1.0), duration_sec=1.0)  # neutral gray
+
+    plain = tmp_path / "plain.mp4"
+    boosted = tmp_path / "boosted.mp4"
+    cut_clip(src, plain, 0.0, 0.5, encoder="libx264", bitrate_kbps=2000)
+    cut_clip(
+        src, boosted, 0.0, 0.5, encoder="libx264", bitrate_kbps=2000,
+        matrix=np.array([[1.6, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.6]]),
+    )
+
+    plain_r = float(extract_frame(plain, 0.2)[..., 0].mean())
+    boosted_r = float(extract_frame(boosted, 0.2)[..., 0].mean())
+    boosted_b = float(extract_frame(boosted, 0.2)[..., 2].mean())
+    plain_b = float(extract_frame(plain, 0.2)[..., 2].mean())
+    assert boosted_r > plain_r + 5   # red channel boosted
+    assert boosted_b < plain_b - 5   # blue channel attenuated
+
+
 def test_concat_clips_writes_playable_video(tmp_path):
     from dcwb.ffmpeg_wrap import concat_clips, probe_duration
     from tests.fixtures.make_synthetic import make_motion_clip

@@ -80,6 +80,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--vlm-model", default=None, help="Override highlight_ai.model")
     ph.add_argument("--allow-no-ai", action="store_true", help="Fall back to the MVP scorer if the VLM is unavailable")
     ph.add_argument("--no-vlm-cache", action="store_true", help="Ignore and overwrite the per-day VLM cache")
+    ph.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR, help="Camera profiles dir (front.json) for white balance")
+    ph.add_argument("--no-white-balance", action="store_true", help="Do not apply A x B white-balance correction to excerpts")
 
     return p
 
@@ -263,6 +265,9 @@ def _cmd_highlight_day(args) -> int:
             use_cache=not args.no_vlm_cache,
             selection=selection,
             on_progress=on_progress,
+            profiles_dir=args.profiles_dir.resolve(),
+            awb_cfg=cfg_all.get("awb"),
+            white_balance=not args.no_white_balance,
         )
     except FileNotFoundError as e:
         print(f"[highlight] {e}", file=sys.stderr)

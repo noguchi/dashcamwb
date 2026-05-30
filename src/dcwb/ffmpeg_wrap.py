@@ -103,16 +103,8 @@ def render_with_matrix(
 
     On non-Apple-Silicon systems pass encoder='libx264' explicitly.
     """
-    if matrix.shape != (3, 3):
-        raise ValueError(f"expected 3x3 matrix, got {matrix.shape}")
     encoder = resolve_encoder(encoder)
-    m = matrix
-    cm = (
-        f"colorchannelmixer="
-        f"rr={m[0, 0]:.6f}:rg={m[0, 1]:.6f}:rb={m[0, 2]:.6f}:"
-        f"gr={m[1, 0]:.6f}:gg={m[1, 1]:.6f}:gb={m[1, 2]:.6f}:"
-        f"br={m[2, 0]:.6f}:bg={m[2, 1]:.6f}:bb={m[2, 2]:.6f}"
-    )
+    cm = _colorchannelmixer(matrix)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -147,6 +139,18 @@ def _run_ffmpeg(cmd: list[str], tmp: Path) -> None:
         ) from e
 
 
+def _colorchannelmixer(matrix: Matrix3x3) -> str:
+    if matrix.shape != (3, 3):
+        raise ValueError(f"expected 3x3 matrix, got {matrix.shape}")
+    m = matrix
+    return (
+        f"colorchannelmixer="
+        f"rr={m[0, 0]:.6f}:rg={m[0, 1]:.6f}:rb={m[0, 2]:.6f}:"
+        f"gr={m[1, 0]:.6f}:gg={m[1, 1]:.6f}:gb={m[1, 2]:.6f}:"
+        f"br={m[2, 0]:.6f}:bg={m[2, 1]:.6f}:bb={m[2, 2]:.6f}"
+    )
+
+
 def cut_clip(
     src: Path,
     dst: Path,
@@ -154,7 +158,13 @@ def cut_clip(
     duration_sec: float,
     encoder: str = "h264_videotoolbox",
     bitrate_kbps: int = 12000,
+    matrix: Matrix3x3 | None = None,
 ) -> None:
+    """Cut [start_sec, start_sec+duration_sec) from src into dst.
+
+    When `matrix` is given, the 3x3 RGB color transform is applied via
+    colorchannelmixer in the same pass (no second re-encode).
+    """
     encoder = resolve_encoder(encoder)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
@@ -164,6 +174,10 @@ def cut_clip(
         "-i", str(src),
         "-t", f"{duration_sec:.3f}",
         "-an",
+    ]
+    if matrix is not None:
+        cmd += ["-vf", _colorchannelmixer(matrix)]
+    cmd += [
         "-c:v", encoder,
         "-b:v", f"{bitrate_kbps}k",
         "-pix_fmt", "yuv420p",

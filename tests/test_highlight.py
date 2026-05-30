@@ -527,6 +527,86 @@ def test_highlight_day_ai_path_writes_manifest_with_ai_block(tmp_path, monkeypat
     assert (tmp_path / "highlights" / "2026-05-08" / "vlm-cache.json").exists()
 
 
+def test_wb_attenuation_day_is_identity_night_is_attenuated():
+    from dcwb.highlight import _wb_attenuation
+    # ~13:00 JST late May in Tokyo is daytime; ~02:00 is night.
+    assert _wb_attenuation("2026-05-27_13-00-00", night_attenuation=0.5) == 1.0
+    assert _wb_attenuation("2026-05-27_02-00-00", night_attenuation=0.5) == 0.5
+    # unparseable timestamp falls back to no attenuation (identity)
+    assert _wb_attenuation("not-a-timestamp", night_attenuation=0.5) == 1.0
+
+
+def _write_front_profile(profiles_dir, gain_r=1.2, gain_b=0.8):
+    import json
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / "front.json").write_text(json.dumps({
+        "camera": "front", "gain_r": gain_r, "gain_g": 1.0, "gain_b": gain_b,
+        "matrix_3x3": [[gain_r, 0, 0], [0, 1.0, 0], [0, 0, gain_b]],
+        "calibration": {
+            "samples_used": 1, "events_sampled": 1, "method": "test",
+            "calibrated_at": "2026-05-01T00:00:00+09:00", "samples_per_event_max": 1,
+        },
+    }))
+
+
+def test_highlight_day_applies_white_balance_and_records_manifest(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-27"
+    day.mkdir(parents=True)
+    make_motion_clip(day / "2026-05-27_13-00-00-front.mp4", duration_sec=2.0)
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+    profiles_dir = tmp_path / "profiles"
+    _write_front_profile(profiles_dir)
+
+    result = highlight_day(
+        source_root=source, date="2026-05-27", out_root=tmp_path / "h",
+        style="fast", allow_no_sei=False, encoder="libx264", bitrate_kbps=1000,
+        target_duration_sec=1.0, vlm_client=None,
+        profiles_dir=profiles_dir, white_balance=True,
+    )
+
+    assert result.output_path.exists()
+    wb = json.loads(result.manifest_path.read_text())["clips"][0]["white_balance"]
+    assert wb["applied"] is True
+    assert len(wb["scene_gain"]) == 3
+    assert len(wb["final_matrix"]) == 3
+
+
+def test_highlight_day_white_balance_off_records_not_applied(tmp_path, monkeypatch):
+    import json
+    from dcwb import highlight
+    from dcwb.highlight import highlight_day
+    from tests.fixtures.make_synthetic import make_motion_clip
+
+    source = tmp_path / "usb"
+    day = source / "RecentClips" / "2026-05-27"
+    day.mkdir(parents=True)
+    make_motion_clip(day / "2026-05-27_13-00-00-front.mp4", duration_sec=2.0)
+    monkeypatch.setattr(
+        highlight, "read_segment_telemetry",
+        lambda p: SegmentTelemetry(True, 60, {"DRIVE": 60}, True, 12.0, 8.0, 3.0, 60),
+    )
+    profiles_dir = tmp_path / "profiles"
+    _write_front_profile(profiles_dir)
+
+    result = highlight_day(
+        source_root=source, date="2026-05-27", out_root=tmp_path / "h",
+        style="fast", allow_no_sei=False, encoder="libx264", bitrate_kbps=1000,
+        target_duration_sec=1.0, vlm_client=None,
+        profiles_dir=profiles_dir, white_balance=False,
+    )
+
+    assert json.loads(result.manifest_path.read_text())["clips"][0]["white_balance"]["applied"] is False
+
+
 def test_highlight_day_mvp_path_marks_selection(tmp_path, monkeypatch):
     import json
     from dcwb import highlight
