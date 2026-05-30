@@ -312,7 +312,7 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
 
     insv = [Path(p) for p in insv]
     out_root = Path(out_root)
-    rate = 50.0
+    rate = 10.0
 
     # --- absolute window from insv ---
     start_jst = insta360.to_jst(insta360.read_creation_time(insv[0]))
@@ -328,8 +328,13 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
         return 1
     print(f"[sync] {len(fronts)} Tesla front clips", file=sys.stderr)
 
-    # --- Tesla epoch-relative motion series (epoch = insta start_jst) ---
-    t_abs, head, accx, speed, steer, gear = [], [], [], [], [], []
+    # --- Tesla epoch-relative samples (epoch = insta start_jst) ---
+    # NOTE: heading_deg is a dead field in this firmware (all zeros), so the
+    # turn signal is derived from GPS course (lat/lon gradient), gated to moving
+    # frames. Even then it only reaches peak ~0.16, so auto fine-sync genuinely
+    # does not lock on this data; the trustworthy alignment is the timestamp
+    # anchor (see below) and the xcorr residual is only applied when confident.
+    t_abs, accx, speed, steer, gear, lat, lon = [], [], [], [], [], [], []
     for fp in fronts:
         cs = S._front_start(fp.name)
         frames = list(iter_segment_frames(fp))
@@ -340,8 +345,9 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
         base = (cs - start_jst).total_seconds()
         for f in frames:
             t_abs.append(base + f.frame_index / fps)
-            head.append(f.heading_deg); accx.append(f.accel_x)
-            speed.append(f.speed_mps); steer.append(f.steering_deg); gear.append(f.gear)
+            accx.append(f.accel_x); speed.append(f.speed_mps)
+            steer.append(f.steering_deg); gear.append(f.gear)
+            lat.append(f.lat); lon.append(f.lon)
     t_abs = np.asarray(t_abs)
     # np.interp (inside resample_uniform) silently returns garbage when its xp
     # (time) array is not strictly increasing. Overlapping Tesla front-clip
@@ -351,76 +357,70 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     _was_mono = bool(np.all(np.diff(t_abs) > 0)) if _n0 > 1 else True
     order = np.argsort(t_abs, kind="stable")
     t_abs = t_abs[order]
-    head = np.asarray(head)[order]; accx = np.asarray(accx)[order]
-    speed = np.asarray(speed)[order]; steer = np.asarray(steer)[order]
+    accx = np.asarray(accx)[order]; speed = np.asarray(speed)[order]
+    steer = np.asarray(steer)[order]
+    lat = np.asarray(lat)[order]; lon = np.asarray(lon)[order]
     keep = np.concatenate(([True], np.diff(t_abs) > 1e-6))
-    t_abs = t_abs[keep]; head = head[keep]; accx = accx[keep]
-    speed = speed[keep]; steer = steer[keep]
+    t_abs = t_abs[keep]; accx = accx[keep]; speed = speed[keep]
+    steer = steer[keep]; lat = lat[keep]; lon = lon[keep]
     print(f"[sync] tesla samples {_n0} -> {len(t_abs)} "
           f"(already monotonic: {_was_mono})", file=sys.stderr)
 
-    head_unwrapped = np.degrees(np.unwrap(np.radians(np.asarray(head))))
-    gt, head_u = S.resample_uniform(t_abs, head_unwrapped, rate)
-    _, accx_u = S.resample_uniform(t_abs, np.asarray(accx), rate)
-    tesla_yaw = np.gradient(head_u, 1.0 / rate)
-    tesla = S.MotionSeries(t=gt, yaw_rate=tesla_yaw, accel_x=accx_u)
+    # Tesla turn signal from GPS course, gated to moving frames.
+    gt, latu = S.resample_uniform(t_abs, lat, rate)
+    _, lonu = S.resample_uniform(t_abs, lon, rate)
+    _, spdu = S.resample_uniform(t_abs, speed, rate)
+    dlat = np.gradient(latu)
+    dlon = np.gradient(lonu * np.cos(np.radians(latu)))
+    course = np.degrees(np.unwrap(np.arctan2(dlon, dlat)))
+    tesla_yawmag = np.abs(np.gradient(course, 1.0 / rate))
+    tesla_yawmag[spdu < 2.0] = 0.0          # course is noise when slow/stopped
 
-    # --- Insta360 IMU series (epoch-relative; t_s is seconds into recording) ---
+    # --- Insta360 gyro magnitude on the SAME epoch grid ---
     imu = insta360.read_imu(insv[0])
-    it = np.asarray([s.t_s for s in imu])
-    gxyz = {ax: np.asarray([s.gyro[i] for s in imu]) for i, ax in enumerate("xyz")}
-    iax = np.asarray([s.accel[0] for s in imu])
-    # Same monotonic guard for the IMU clock (should already be monotonic, but
-    # np.interp gives garbage otherwise, so guard regardless).
+    it = np.asarray([s.t_s for s in imu]); it = it - it[0]   # epoch ~ insta video start
+    gx = np.asarray([s.gyro[0] for s in imu])
+    gy = np.asarray([s.gyro[1] for s in imu])
+    gz = np.asarray([s.gyro[2] for s in imu])
+    # Monotonic guard for the IMU clock (should already be monotonic, guard anyway).
     _imu_mono = bool(np.all(np.diff(it) > 0)) if len(it) > 1 else True
     iorder = np.argsort(it, kind="stable")
-    it = it[iorder]
-    gxyz = {ax: gxyz[ax][iorder] for ax in "xyz"}
-    iax = iax[iorder]
+    it = it[iorder]; gx = gx[iorder]; gy = gy[iorder]; gz = gz[iorder]
     ikeep = np.concatenate(([True], np.diff(it) > 1e-6))
-    it = it[ikeep]
-    gxyz = {ax: gxyz[ax][ikeep] for ax in "xyz"}
-    iax = iax[ikeep]
+    it = it[ikeep]; gx = gx[ikeep]; gy = gy[ikeep]; gz = gz[ikeep]
     print(f"[sync] imu samples {len(it)} (already monotonic: {_imu_mono})", file=sys.stderr)
-    igt, _ = S.resample_uniform(it, gxyz["x"], rate)
-    gyro_u = {ax: S.resample_uniform(it, gxyz[ax], rate)[1] for ax in "xyz"}
-    accx_iu = S.resample_uniform(it, iax, rate)[1]
-    gyro_mag = np.sqrt(gyro_u["x"] ** 2 + gyro_u["y"] ** 2 + gyro_u["z"] ** 2)
+    igt, gxu = S.resample_uniform(it, gx, rate)
+    _, gyu = S.resample_uniform(it, gy, rate)
+    _, gzu = S.resample_uniform(it, gz, rate)
+    gyro_mag = np.sqrt(gxu ** 2 + gyu ** 2 + gzu ** 2)
 
-    # --- axis/sign + magnitude search: which insta signal best matches Tesla ---
-    # Turns spike the rotation-rate magnitude regardless of which gyro axis is
-    # vertical or its sign, so |gyro| vs |tesla_yaw| is an axis/sign-invariant
-    # candidate that should lock far better than any single signed axis.
-    max_lag = int(60.0 * rate)
-    tesla_yaw_mag = np.abs(tesla_yaw)
-    best = (None, -2.0, 0)  # (name, peak, lag)
-    for ax in "xyz":
-        for sign in (1.0, -1.0):
-            lag, peak = S.normalized_xcorr(tesla_yaw, sign * gyro_u[ax], max_lag)
-            if peak > best[1]:
-                best = (f"{'+' if sign > 0 else '-'}g{ax}", peak, lag)
-    lag, peak = S.normalized_xcorr(tesla_yaw_mag, gyro_mag, max_lag)
-    if peak > best[1]:
-        best = ("|gyro|", peak, lag)
-    axis_name, axis_peak, _ = best
-    print(f"[sync] insta yaw axis = {axis_name} (peak {axis_peak:.3f})", file=sys.stderr)
+    # --- timestamp anchor (the trustworthy default) ---
+    # tesla_concat local t=0 is fronts[0] start; insta local t=0 is start_jst.
+    tesla0 = (S._front_start(fronts[0].name) - start_jst).total_seconds()  # ~ -53 (tesla leads)
+    anchor_tesla_lead = -tesla0                                            # ~ +53 seconds
 
-    if axis_name == "|gyro|":
-        # Refine on the magnitude pair so compute_offset works on the same
-        # signal that won the search.
-        chosen = gyro_mag
-        tesla_for_offset = S.MotionSeries(t=gt, yaw_rate=tesla_yaw_mag, accel_x=accx_u)
+    # --- residual xcorr correction, applied ONLY if confident and small ---
+    # Both gt and igt are epoch-relative seconds, so put both magnitude signals
+    # on a common overlap grid and correlate with a SMALL max_lag (+/-15 s); a
+    # perfect alignment then gives lag~0.
+    lo = max(gt[0], igt[0]); hi = min(gt[-1], igt[-1])
+    grid = np.arange(lo, hi, 1.0 / rate)
+    tv = np.interp(grid, gt, tesla_yawmag)
+    iv = np.interp(grid, igt, gyro_mag)
+    lag, peak = S.normalized_xcorr(tv, iv, max_lag=int(15 * rate))
+    residual = lag / rate
+    CONF_MIN = 0.35
+    if peak < CONF_MIN or abs(residual) > 15.0:
+        residual = 0.0
+        method = "anchor"
     else:
-        # axis_name is like "+gz" / "-gx"; recover the sign and the x/y/z letter.
-        ax_letter = axis_name[-1]
-        chosen = (1.0 if axis_name[0] == "+" else -1.0) * gyro_u[ax_letter]
-        tesla_for_offset = tesla
+        method = "anchor+xcorr"
+    tesla_lead = anchor_tesla_lead + residual
+    print(f"[sync] anchor_tesla_lead={anchor_tesla_lead:.1f}s residual={residual:.2f}s "
+          f"peak={peak:.3f} method={method} -> tesla_lead={tesla_lead:.1f}s", file=sys.stderr)
 
-    insta = S.MotionSeries(t=igt, yaw_rate=chosen, accel_x=accx_iu)
-    res = S.compute_offset(tesla_for_offset, insta, anchor_guess=0.0,
-                           window_s=60.0, rate_hz=rate)
-    print(f"[sync] delta_s={res.delta_s:.3f} confidence={res.confidence:.3f} "
-          f"signal={res.signal}", file=sys.stderr)
+    res = S.SyncResult(delta_s=tesla_lead, confidence=float(peak),
+                       signal="gps_yaw|gyro", anchor_guess=anchor_tesla_lead)
 
     # --- render window (capped by max_duration) ---
     out_dir = out_root / "sync" / recent
@@ -428,9 +428,10 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     enc = encoder
     cap = max_duration if max_duration else min(insv_total, 600.0)
 
-    # Tesla concat: only the clips needed to cover the cap, to keep it fast.
+    # Tesla concat: enough clips to cover [0, anchor_tesla_lead + cap], since
+    # Tesla leads and we trim it by ~tesla_lead before showing the cap window.
     tesla_cat = out_dir / "tesla-concat.mp4"
-    n_clips = min(len(fronts), max(1, int(cap // 60) + 2))
+    n_clips = min(len(fronts), max(1, int((anchor_tesla_lead + cap) // 60) + 2))
     concat_clips(fronts[:n_clips], tesla_cat, encoder=enc, bitrate_kbps=bitrate_kbps)
 
     # Insta display: provided flat export, else v360 reframe of the capped window.
@@ -442,31 +443,32 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                      encoder=enc, bitrate_kbps=bitrate_kbps,
                      start=0.0, duration=cap)
 
-    # Telemetry rows (epoch-relative, sampled ~1 Hz over the cap). Resample the
-    # raw per-frame speed/steer onto the same uniform grid as the headings.
-    speed_u = S.resample_uniform(t_abs, np.asarray(speed), rate)[1]
-    steer_u = S.resample_uniform(t_abs, np.asarray(steer), rate)[1]
+    # Telemetry rows (~1 Hz over the cap), aligned to the displayed window. The
+    # Tesla panel shows footage starting at epoch ~tesla_lead (= anchor_tesla_lead
+    # when method=='anchor'), so sample speed/steer/gear over [tesla_lead, +cap]
+    # but label rows with local display time 0..cap.
+    speed_u = S.resample_uniform(t_abs, speed, rate)[1]
+    steer_u = S.resample_uniform(t_abs, steer, rate)[1]
     rows = []
     step = max(1, int(rate))
     for k in range(0, len(gt), step):
-        if gt[k] > cap:
+        local = gt[k] - tesla_lead
+        if local < 0:
+            continue
+        if local > cap:
             break
-        rows.append((float(gt[k]), float(speed_u[k]), float(steer_u[k]), "DRIVE"))
+        rows.append((float(local), float(speed_u[k]), float(steer_u[k]), "DRIVE"))
     ass = out_dir / "telemetry.ass"
     ass.write_text(S.telemetry_ass(rows, play_w=2560, play_h=720))
 
-    # Alignment trims. tesla_concat local t=0 is fronts[0] start; the insta display
-    # local t=0 is the recording start. delta_s maps the insta timeline onto the
-    # tesla timeline (epoch = insta start). tesla0 is fronts[0] start relative to
-    # that epoch (negative when Tesla leads, as it does here: 17:17:04 < 17:17:57).
-    # insta_lead = how much the insta display must be advanced to line up with the
-    # tesla concat. Exact frame-sign is refined by the web player nudge (next task).
-    tesla0 = (S._front_start(fronts[0].name) - start_jst).total_seconds()
-    insta_lead = res.delta_s + tesla0
-    left_start = max(0.0, insta_lead)
-    right_start = max(0.0, -insta_lead)
-    print(f"[sync] tesla0={tesla0:.3f} insta_lead={insta_lead:.3f} "
-          f"left_start={left_start:.3f} right_start={right_start:.3f}", file=sys.stderr)
+    # Alignment trims. left = insta display, right = tesla concat. Tesla leads by
+    # tesla_lead seconds, so trim the tesla (right) input to drop its head; the
+    # insta (left) starts at 0. (If tesla_lead were negative, trim insta instead.)
+    if tesla_lead >= 0:
+        right_start = tesla_lead; left_start = 0.0
+    else:
+        left_start = -tesla_lead; right_start = 0.0
+    print(f"[sync] left_start={left_start:.3f} right_start={right_start:.3f}", file=sys.stderr)
 
     combined = out_dir / f"combined-{recent}.mp4"
     render_sidebyside(display, tesla_cat, combined,
