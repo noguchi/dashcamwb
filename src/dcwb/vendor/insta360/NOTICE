@@ -1,0 +1,5 @@
+Insta360 .insv trailer IMU format.
+Reverse-engineered by the gyroflow project (telemetry-parser, src/insta360/),
+GPL/MIT-dual licensed. This module is an independent Python port of the trailer
+record-walking and IMU sample layout. See:
+https://github.com/gyroflow/telemetry-parser
