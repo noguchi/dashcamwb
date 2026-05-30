@@ -101,8 +101,11 @@ def _build_parser() -> argparse.ArgumentParser:
     # (yaw=180 faces forward away from the rear lens; roll=180 corrects an
     # upside-down-mounted camera).
     py.add_argument("--insta-yaw", type=float, default=180.0)
-    py.add_argument("--insta-pitch", type=float, default=-10.0)
+    py.add_argument("--insta-pitch", type=float, default=20.0,
+                    help="Downward tilt; ~20 frames forward road + the center control panel")
     py.add_argument("--insta-roll", type=float, default=180.0)
+    py.add_argument("--insta-hfov", type=float, default=110.0)
+    py.add_argument("--insta-vfov", type=float, default=70.0)
 
     return p
 
@@ -306,7 +309,8 @@ def _cmd_highlight_day(args) -> int:
 
 def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                       encoder, bitrate_kbps, max_duration=None,
-                      insta_yaw=180.0, insta_pitch=-10.0, insta_roll=180.0) -> int:
+                      insta_yaw=180.0, insta_pitch=20.0, insta_roll=180.0,
+                      insta_hfov=110.0, insta_vfov=70.0) -> int:
     """Orchestrate Insta360<->Tesla sync: anchor by creation_time, refine by
     cross-correlating Tesla yaw-rate against an auto-selected Insta360 gyro axis,
     then render a side-by-side combined.mp4 with a telemetry overlay + manifest."""
@@ -448,7 +452,8 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     else:
         display = out_dir / "insta-flat.mp4"
         reframe_insv(insv[0], display, yaw=insta_yaw, pitch=insta_pitch,
-                     roll=insta_roll, out_w=1280, out_h=720,
+                     roll=insta_roll, h_fov=insta_hfov, v_fov=insta_vfov,
+                     out_w=1280, out_h=720,
                      encoder=enc, bitrate_kbps=bitrate_kbps,
                      start=0.0, duration=cap)
 
@@ -503,7 +508,8 @@ def _cmd_sync_insta360(args) -> int:
         encoder=args.encoder, bitrate_kbps=args.bitrate_kbps,
         max_duration=args.max_duration,
         insta_yaw=args.insta_yaw, insta_pitch=args.insta_pitch,
-        insta_roll=args.insta_roll)
+        insta_roll=args.insta_roll, insta_hfov=args.insta_hfov,
+        insta_vfov=args.insta_vfov)
 
 
 def main(argv: list[str] | None = None) -> int:
