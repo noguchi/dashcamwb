@@ -270,6 +270,34 @@ def render_sidebyside(
     tmp.replace(dst)
 
 
+def reframe_insv(
+    insv: Path, dst: Path, yaw: float = 0.0, pitch: float = -10.0,
+    out_w: int = 1920, out_h: int = 1080, h_fov: float = 100.0, v_fov: float = 60.0,
+    encoder: str = "h264_videotoolbox", bitrate_kbps: int = 12000,
+) -> None:
+    """Dual-fisheye .insv -> flat ride-view via v360. Front lens = stream 0,
+    back lens = stream 1; hstack into a dual-fisheye frame then project."""
+    encoder = resolve_encoder(encoder)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    # A single .insv file contains two video streams (front=0, back=1).
+    # Reference them as [0:v:0] and [0:v:1] within the single-input filter graph.
+    graph = (
+        "[0:v:0][0:v:1]hstack=inputs=2[df];"
+        f"[df]v360=dfisheye:flat:yaw={yaw}:pitch={pitch}:"
+        f"h_fov={h_fov}:v_fov={v_fov}:w={out_w}:h={out_h}[outv]"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(insv),
+        "-filter_complex", graph, "-map", "[outv]", "-an",
+        "-c:v", encoder, "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4", str(tmp),
+    ]
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)
+
+
 def concat_clips(
     clips: list[Path],
     dst: Path,
