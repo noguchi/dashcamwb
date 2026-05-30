@@ -234,6 +234,80 @@ def cut_clip(
     tmp.replace(dst)
 
 
+def render_sidebyside(
+    left: Path, right: Path, dst: Path,
+    left_start: float, right_start: float, duration: float,
+    ass_path: Path | None = None,
+    encoder: str = "h264_videotoolbox", bitrate_kbps: int = 12000,
+    panel_h: int = 720,
+) -> None:
+    """hstack two videos, each trimmed from its own start so both share t=0,
+    scaled to a common height, with optional burned ASS telemetry."""
+    encoder = resolve_encoder(encoder)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    scale = f"scale=-2:{panel_h}"
+    graph = (
+        f"[0:v]trim=start={left_start:.3f}:duration={duration:.3f},"
+        f"setpts=PTS-STARTPTS,{scale}[l];"
+        f"[1:v]trim=start={right_start:.3f}:duration={duration:.3f},"
+        f"setpts=PTS-STARTPTS,{scale}[r];"
+        f"[l][r]hstack=inputs=2[stacked]"
+    )
+    if ass_path is not None:
+        ass_esc = str(ass_path).replace("\\", "\\\\").replace(":", "\\:")
+        graph += f";[stacked]subtitles='{ass_esc}'[outv]"
+    else:
+        graph += ";[stacked]copy[outv]"
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(left), "-i", str(right),
+        "-filter_complex", graph, "-map", "[outv]", "-an",
+        "-c:v", encoder, "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4", str(tmp),
+    ]
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)
+
+
+def reframe_insv(
+    insv: Path, dst: Path, yaw: float = 0.0, pitch: float = -10.0, roll: float = 0.0,
+    out_w: int = 1920, out_h: int = 1080, h_fov: float = 100.0, v_fov: float = 60.0,
+    encoder: str = "h264_videotoolbox", bitrate_kbps: int = 12000,
+    start: float = 0.0, duration: float | None = None,
+) -> None:
+    """Dual-fisheye .insv -> flat ride-view via v360. Front lens = stream 0,
+    back lens = stream 1; hstack into a dual-fisheye frame then project.
+
+    When ``duration`` is set, the input is fast-seeked/trimmed via input-side
+    ``-ss``/``-t`` (before ``-i``) so only that window is decoded and reframed.
+    """
+    encoder = resolve_encoder(encoder)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    # A single .insv file contains two video streams (front=0, back=1).
+    # Reference them as [0:v:0] and [0:v:1] within the single-input filter graph.
+    graph = (
+        "[0:v:0][0:v:1]hstack=inputs=2[df];"
+        f"[df]v360=dfisheye:flat:yaw={yaw}:pitch={pitch}:roll={roll}:"
+        f"h_fov={h_fov}:v_fov={v_fov}:w={out_w}:h={out_h}[outv]"
+    )
+    trim = []
+    if duration is not None:
+        # Input-side trim (before -i): fast seek + cap window length.
+        trim = ["-ss", f"{start}", "-t", f"{duration}"]
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        *trim,
+        "-i", str(insv),
+        "-filter_complex", graph, "-map", "[outv]", "-an",
+        "-c:v", encoder, "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4", str(tmp),
+    ]
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)
+
+
 def concat_clips(
     clips: list[Path],
     dst: Path,
@@ -272,3 +346,41 @@ def concat_clips(
     ]
     _run_ffmpeg(cmd, tmp)
     tmp.replace(dst)
+
+
+def frame_diff_envelope(
+    path: Path,
+    *,
+    fps: float = 4.0,
+    width: int = 160,
+    height: int = 90,
+    start: float = 0.0,
+    duration: float | None = None,
+    stream: str = "0:v:0",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Mean absolute frame-to-frame difference of downscaled grayscale frames.
+
+    A pure-pixel whole-frame ego-motion proxy: ~0 while parked (static scene),
+    high while the camera/vehicle moves. Used to detect "the car starts moving"
+    and to time-align two videos without any telemetry/IMU. Returns
+    ``(times, diffs)`` numpy arrays (one diff per consecutive frame pair).
+    """
+    cmd = ["ffmpeg", "-v", "error"]
+    if start:
+        cmd += ["-ss", f"{start}"]
+    if duration is not None:
+        cmd += ["-t", f"{duration}"]
+    cmd += [
+        "-i", str(path), "-map", stream,
+        "-vf", f"fps={fps},scale={width}:{height},format=gray",
+        "-f", "rawvideo", "-",
+    ]
+    raw = subprocess.run(cmd, capture_output=True).stdout
+    fr = np.frombuffer(raw, dtype=np.uint8)
+    n = len(fr) // (width * height)
+    if n < 2:
+        return np.zeros(0), np.zeros(0)
+    fr = fr[: n * width * height].reshape(n, height * width).astype(np.float32)
+    d = np.abs(np.diff(fr, axis=0)).mean(axis=1)
+    t = start + np.arange(len(d)) / fps
+    return t, d

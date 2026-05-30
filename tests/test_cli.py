@@ -436,3 +436,19 @@ def test_highlight_day_prints_progress_to_stderr(tmp_path, monkeypatch, capsys):
     assert "telemetry 100/100 kept=60" in err
     assert "vlm 2/4" in err
     assert "interest=8 海沿い" in err
+
+
+def test_sync_insta360_parses_args(monkeypatch, tmp_path):
+    from dcwb import cli
+    captured = {}
+    def fake_run(**kw):
+        captured.update(kw); return 0
+    monkeypatch.setattr(cli, "run_sync_insta360", fake_run, raising=False)
+    insv = tmp_path / "VID.insv"; insv.write_bytes(b"")
+    rc = cli.main(["sync-insta360", str(insv), "--recent", "2026-05-27",
+                   "--insta-flat", str(tmp_path / "flat.mp4"),
+                   "--encoder", "libx264"])
+    assert rc == 0
+    assert captured["recent"] == "2026-05-27"
+    assert captured["encoder"] == "libx264"
+    assert str(insv) in [str(p) for p in captured["insv"]]
