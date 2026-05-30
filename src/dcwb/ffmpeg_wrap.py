@@ -234,6 +234,42 @@ def cut_clip(
     tmp.replace(dst)
 
 
+def render_sidebyside(
+    left: Path, right: Path, dst: Path,
+    left_start: float, right_start: float, duration: float,
+    ass_path: Path | None = None,
+    encoder: str = "h264_videotoolbox", bitrate_kbps: int = 12000,
+    panel_h: int = 720,
+) -> None:
+    """hstack two videos, each trimmed from its own start so both share t=0,
+    scaled to a common height, with optional burned ASS telemetry."""
+    encoder = resolve_encoder(encoder)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    scale = f"scale=-2:{panel_h}"
+    graph = (
+        f"[0:v]trim=start={left_start:.3f}:duration={duration:.3f},"
+        f"setpts=PTS-STARTPTS,{scale}[l];"
+        f"[1:v]trim=start={right_start:.3f}:duration={duration:.3f},"
+        f"setpts=PTS-STARTPTS,{scale}[r];"
+        f"[l][r]hstack=inputs=2[stacked]"
+    )
+    if ass_path is not None:
+        ass_esc = str(ass_path).replace("\\", "\\\\").replace(":", "\\:")
+        graph += f";[stacked]subtitles='{ass_esc}'[outv]"
+    else:
+        graph += ";[stacked]copy[outv]"
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(left), "-i", str(right),
+        "-filter_complex", graph, "-map", "[outv]", "-an",
+        "-c:v", encoder, "-b:v", f"{bitrate_kbps}k",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4", str(tmp),
+    ]
+    _run_ffmpeg(cmd, tmp)
+    tmp.replace(dst)
+
+
 def concat_clips(
     clips: list[Path],
     dst: Path,
