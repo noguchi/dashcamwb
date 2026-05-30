@@ -55,7 +55,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     ps.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
     ps.add_argument("--cache-dir", type=Path, default=Path("cache"))
-    ps.add_argument("--host", default="127.0.0.1")
+    ps.add_argument("--host", default="0.0.0.0",
+                    help="Bind address; default 0.0.0.0 exposes the UI on the LAN "
+                         "(use --host 127.0.0.1 for loopback-only)")
     ps.add_argument("--port", type=int, default=8765)
     ps.add_argument("--debug", action="store_true")
 
