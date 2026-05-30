@@ -358,11 +358,11 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     order = np.argsort(t_abs, kind="stable")
     t_abs = t_abs[order]
     accx = np.asarray(accx)[order]; speed = np.asarray(speed)[order]
-    steer = np.asarray(steer)[order]
+    steer = np.asarray(steer)[order]; gear = np.asarray(gear)[order]
     lat = np.asarray(lat)[order]; lon = np.asarray(lon)[order]
     keep = np.concatenate(([True], np.diff(t_abs) > 1e-6))
     t_abs = t_abs[keep]; accx = accx[keep]; speed = speed[keep]
-    steer = steer[keep]; lat = lat[keep]; lon = lon[keep]
+    steer = steer[keep]; gear = gear[keep]; lat = lat[keep]; lon = lon[keep]
     print(f"[sync] tesla samples {_n0} -> {len(t_abs)} "
           f"(already monotonic: {_was_mono})", file=sys.stderr)
 
@@ -447,8 +447,11 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     # Tesla panel shows footage starting at epoch ~tesla_lead (= anchor_tesla_lead
     # when method=='anchor'), so sample speed/steer/gear over [tesla_lead, +cap]
     # but label rows with local display time 0..cap.
-    speed_u = S.resample_uniform(t_abs, speed, rate)[1]
-    steer_u = S.resample_uniform(t_abs, steer, rate)[1]
+    # Resample speed and steer onto the same gt grid used for GPS/yaw above.
+    _, speed_u = S.resample_uniform(t_abs, speed, rate)
+    _, steer_u = S.resample_uniform(t_abs, steer, rate)
+    # Gear is categorical — map each gt grid point to the nearest real sample.
+    gear_idx = np.clip(np.searchsorted(t_abs, gt), 0, len(gear) - 1)
     rows = []
     step = max(1, int(rate))
     for k in range(0, len(gt), step):
@@ -457,7 +460,7 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
             continue
         if local > cap:
             break
-        rows.append((float(local), float(speed_u[k]), float(steer_u[k]), "DRIVE"))
+        rows.append((float(local), float(speed_u[k]), float(steer_u[k]), str(gear[gear_idx[k]])))
     ass = out_dir / "telemetry.ass"
     ass.write_text(S.telemetry_ass(rows, play_w=2560, play_h=720))
 

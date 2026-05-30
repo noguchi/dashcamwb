@@ -58,7 +58,9 @@ def compute_offset(tesla: MotionSeries, insta: MotionSeries,
 
     delta_s is defined as (insta.t[0] - tesla.t[0]) plus the residual correlation
     lag, i.e. the offset that maps the insta timeline onto the tesla timeline.
-    The rendering sign convention is calibrated against real data in the CLI task.
+    Retained for signal-correlation unit tests and potential future re-enable;
+    the CLI orchestrator no longer calls this helper (it builds its own GPS-yaw /
+    gyro-magnitude correlation directly).
     Tries yaw-rate first; falls back to accel_x when its correlation peak is weaker.
     """
     base = float(insta.t[0] - tesla.t[0])

@@ -185,8 +185,13 @@ def create_app(
         f = (sync_root / date / "sync.json").resolve()
         if not f.is_relative_to(sync_root.resolve()) or not f.exists():
             abort(404)
+        body = request.get_json(silent=True) or {}
+        try:
+            new_delta = float(body["delta_s"])
+        except (KeyError, TypeError, ValueError):
+            abort(400)
         data = json.loads(f.read_text())
-        data["delta_s"] = float(request.get_json()["delta_s"])
+        data["delta_s"] = new_delta
         f.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         return jsonify(ok=True, delta_s=data["delta_s"])
 

@@ -131,7 +131,10 @@ def read_imu(insv: Path) -> list[ImuSample]:
             raise ValueError("trailer not offsets-index layout (first_id != 0)")
         if _IMU_RECORD_ID not in offsets:
             raise ValueError(f"no IMU record (id=3); have ids {sorted(offsets)}")
-        acc_range, gyro_range = _read_ranges(fp, extra_start, offsets)
+        try:
+            acc_range, gyro_range = _read_ranges(fp, extra_start, offsets)
+        except Exception:
+            acc_range, gyro_range = _DEFAULT_ACC_RANGE, _DEFAULT_GYRO_RANGE
         g_off, g_size = offsets[_IMU_RECORD_ID]
         body = _read_at(fp, extra_start + g_off, g_size)
     if g_size % _ITEM != 0 or g_size == 0:

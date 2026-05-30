@@ -42,3 +42,8 @@ def test_sync_player_page_renders(tmp_path):
     r = app.test_client().get("/sync/2026-05-27")
     assert r.status_code == 200
     assert b"<video" in r.data
+
+def test_sync_nudge_bad_payload_400(tmp_path):
+    app, _ = _app(tmp_path)
+    r = app.test_client().post("/sync-nudge/2026-05-27", json={"nope": 1})
+    assert r.status_code == 400
