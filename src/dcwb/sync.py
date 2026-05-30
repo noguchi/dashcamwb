@@ -103,6 +103,38 @@ def select_front_clips(day_dir: Path, start: datetime, end: datetime,
     return out
 
 
+def detect_visual_offset(insv, tesla_cat, anchor_tesla_lead, insv_total,
+                         fps=4.0, win=240.0, search=60.0):
+    """Time-align two videos by WHOLE-FRAME MOTION only (no telemetry/IMU).
+
+    Builds the frame-difference envelope (a parked->moving onset signal) of the
+    reference forward view and the Tesla front camera over the start-of-drive
+    region and cross-correlates them. Returns ``(offset_s, peak)`` where a
+    physical instant at reference video time ``v`` occurs at Tesla epoch
+    ``v+offset`` (epoch = reference creation_time). ``peak`` is the normalized
+    correlation score. ``insv`` may be a raw dual-fisheye ``.insv`` (forward lens
+    is stream ``0:v:0``) or any flat mp4.
+    """
+    from dcwb.ffmpeg_wrap import frame_diff_envelope
+
+    win = float(min(win, insv_total))
+    ti, di = frame_diff_envelope(insv, fps=fps, start=0.0, duration=win,
+                                 stream="0:v:0")
+    tdur = win + anchor_tesla_lead + search + 10.0
+    tc, dc = frame_diff_envelope(tesla_cat, fps=fps, start=0.0, duration=tdur,
+                                 stream="0:v:0")
+    if len(di) < 10 or len(dc) < 10:
+        return 0.0, 0.0
+    te = tc - anchor_tesla_lead                       # Tesla epoch time
+    ai = np.log1p(np.clip(di, 0.0, None))             # compress spikes
+    at = np.log1p(np.clip(dc, 0.0, None))
+    g = np.arange(0.0, max(win - 5.0, 1.0), 1.0 / fps)
+    aii = np.interp(g, ti, ai, left=0.0, right=0.0)
+    ati = np.interp(g, te, at, left=0.0, right=0.0)
+    lag, peak = normalized_xcorr(aii, ati, max_lag=int(search * fps))
+    return lag / fps, float(peak)
+
+
 def _ass_ts(t: float) -> str:
     h = int(t // 3600); m = int((t % 3600) // 60); s = t % 60
     return f"{h}:{m:02d}:{s:05.2f}"

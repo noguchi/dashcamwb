@@ -201,6 +201,67 @@ def test_render_event_resilient_to_corrupted_clip(tmp_path):
         rendered = sorted(out_event_dir.glob(f"*-{cam}.mp4"))
         assert len(rendered) == 1, f"expected one rendered clip for {cam}"
 
+def test_render_event_uses_reference_gain_for_all_clips(tmp_path, monkeypatch):
+    """spec §3: when awb.reference_gain is set, every clip uses that fixed gain
+    as B (no per-clip estimate). The snapshot records it and the final matrix is
+    diag(reference_gain) @ A."""
+    import dcwb.render as render_mod
+
+    def _boom(*a, **kw):
+        raise AssertionError("estimate_scene_gain must not be called with reference_gain set")
+    monkeypatch.setattr(render_mod, "estimate_scene_gain", _boom)
+
+    source_root = tmp_path / "src"
+    event_name = "2026-05-05_13-50-46"
+    event_dir = source_root / "SentryClips" / event_name
+    make_event(event_dir)  # all-neutral daytime event
+
+    profiles_dir = tmp_path / "profiles"
+    _write_neutral_profiles(profiles_dir)
+
+    ref_gain = [1.2, 1.0, 0.8]
+    cfg = _default_pipeline_cfg()
+    cfg["awb"]["reference_gain"] = ref_gain
+
+    out_root = tmp_path / "corrected"
+    render_event(
+        event_dir=event_dir, out_root=out_root, profiles_dir=profiles_dir,
+        pipeline_cfg=cfg, encoder="libx264",
+    )
+    snap = json.loads((out_root / event_name / "_pipeline.json").read_text())
+    clips = [c for c in snap["clips"] if "scene_gain" in c]
+    assert len(clips) == len(CAMERAS)
+    for c in clips:
+        assert c["scene_gain"] == ref_gain
+        prof = Profile.from_json(profiles_dir / f"{c['camera']}.json")
+        expected = from_diag(*ref_gain) @ prof.matrix_3x3
+        np.testing.assert_array_almost_equal(np.array(c["final_matrix"]), expected)
+
+
+def test_render_event_ignores_null_reference_gain(tmp_path, monkeypatch):
+    """A null/absent reference_gain keeps the legacy per-clip estimate path."""
+    import dcwb.render as render_mod
+    called = {"n": 0}
+    real = render_mod.estimate_scene_gain
+
+    def _spy(*a, **kw):
+        called["n"] += 1
+        return real(*a, **kw)
+    monkeypatch.setattr(render_mod, "estimate_scene_gain", _spy)
+
+    event_dir = tmp_path / "src" / "SentryClips" / "2026-05-05_13-50-46"
+    make_event(event_dir)
+    profiles_dir = tmp_path / "profiles"
+    _write_neutral_profiles(profiles_dir)
+    cfg = _default_pipeline_cfg()
+    cfg["awb"]["reference_gain"] = None  # explicit null → legacy behaviour
+    render_event(
+        event_dir=event_dir, out_root=tmp_path / "out", profiles_dir=profiles_dir,
+        pipeline_cfg=cfg, encoder="libx264",
+    )
+    assert called["n"] == len(CAMERAS)
+
+
 def test_render_event_night_attenuation_engaged(tmp_path):
     """spec §4.3: night/twilight events must apply night_attenuation; daytime gets 1.0.
 

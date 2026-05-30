@@ -11,6 +11,9 @@ from dcwb.verify import generate_verify_report
 from dcwb import prune as prune_mod
 from dcwb.highlight import highlight_day
 from dcwb.vlm import VlmClient, VlmConfig, VlmUnavailableError
+from dcwb import insta360
+from dcwb.profile import Profile
+from dcwb.refmatch import compute_reference_gain, ReferenceGainError
 
 DEFAULT_PROFILES_DIR = Path("profiles")
 DEFAULT_OUT_ROOT = Path("/Users/noguchi/AI/dashcamwb/corrected")
@@ -115,6 +118,31 @@ def _build_parser() -> argparse.ArgumentParser:
     py.add_argument("--visual-offset", type=float, default=0.0,
                     help="Extra seconds added to the Tesla lead to correct the "
                          "creation_time anchor (Insta video v -> Tesla epoch v+offset)")
+    py.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR,
+                    help="Camera profiles dir (front.json) for the reference colour match")
+    py.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG,
+                    help="Read awb.reference_gain from here when --reference-gain is omitted")
+    py.add_argument("--reference-gain", type=float, nargs=3, default=None,
+                    metavar=("R", "G", "B"),
+                    help="Bake the reference match gain (match-reference output) into "
+                         "the Tesla side of the composite: diag(gain) @ front_A")
+
+    pm = sub.add_parser("match-reference",
+                        help="Compute a reference-camera match gain (B-layer "
+                             "replacement) from a reference video + Tesla front clips")
+    pm.add_argument("reference", type=Path, help="Reference video (.insv or flat mp4)")
+    pm.add_argument("--recent", required=True, help="RecentClips date dir, YYYY-MM-DD")
+    pm.add_argument("--source", type=Path, default=Path("/mnt/sentryusb"))
+    pm.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR)
+    pm.add_argument("--pipeline-config", type=Path, default=DEFAULT_PIPELINE_CFG)
+    pm.add_argument("--write", action="store_true",
+                    help="Write the gain into pipeline.json awb.reference_gain")
+    pm.add_argument("--samples", type=int, default=10)
+    pm.add_argument("--max-window", type=float, default=600.0,
+                    help="Bound the analysed window (seconds) from the reference "
+                         "start, so a long .insv is not reframed/concatenated in full")
+    pm.add_argument("--encoder", default="h264_videotoolbox")
+    pm.add_argument("--bitrate-kbps", type=int, default=12000)
 
     return p
 
@@ -316,43 +344,12 @@ def _cmd_highlight_day(args) -> int:
     return 0
 
 
-def _detect_visual_offset(insv, tesla_cat, anchor_tesla_lead, insv_total,
-                          fps=4.0, win=240.0, search=60.0):
-    """Time-align the two videos by WHOLE-FRAME MOTION only (no telemetry/IMU).
-
-    Builds the frame-difference envelope (a parked->moving onset signal) of the
-    Insta forward fisheye and the Tesla front camera over the start-of-drive
-    region and cross-correlates them. Returns ``(offset_s, peak)`` where a
-    physical instant at Insta video time ``v`` occurs at Tesla epoch ``v+offset``
-    (epoch = Insta creation_time). ``peak`` is the normalized correlation score.
-    """
-    import numpy as np
-    from dcwb.ffmpeg_wrap import frame_diff_envelope
-    from dcwb import sync as S
-
-    win = float(min(win, insv_total))
-    ti, di = frame_diff_envelope(insv, fps=fps, start=0.0, duration=win,
-                                 stream="0:v:0")
-    tdur = win + anchor_tesla_lead + search + 10.0
-    tc, dc = frame_diff_envelope(tesla_cat, fps=fps, start=0.0, duration=tdur,
-                                 stream="0:v:0")
-    if len(di) < 10 or len(dc) < 10:
-        return 0.0, 0.0
-    te = tc - anchor_tesla_lead                       # Tesla epoch time
-    ai = np.log1p(np.clip(di, 0.0, None))             # compress spikes
-    at = np.log1p(np.clip(dc, 0.0, None))
-    g = np.arange(0.0, max(win - 5.0, 1.0), 1.0 / fps)
-    aii = np.interp(g, ti, ai, left=0.0, right=0.0)
-    ati = np.interp(g, te, at, left=0.0, right=0.0)
-    lag, peak = S.normalized_xcorr(aii, ati, max_lag=int(search * fps))
-    return lag / fps, float(peak)
-
-
 def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                       encoder, bitrate_kbps, max_duration=None,
                       insta_yaw=180.0, insta_pitch=14.0, insta_roll=180.0,
                       insta_hfov=82.0, insta_vfov=52.0, start_offset=0.0,
-                      visual_offset=0.0) -> int:
+                      visual_offset=0.0, reference_gain=None,
+                      profiles_dir=DEFAULT_PROFILES_DIR) -> int:
     """Orchestrate Insta360<->Tesla sync. A coarse anchor comes from file
     timestamps (Insta creation_time vs Tesla front filenames); the fine
     alignment is PURELY VISUAL — the moment the car starts moving is detected by
@@ -436,7 +433,7 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     if visual_offset:
         vis_off, vis_peak, method = float(visual_offset), float("nan"), "manual"
     else:
-        vis_off, vis_peak = _detect_visual_offset(
+        vis_off, vis_peak = S.detect_visual_offset(
             insv[0], tesla_cat, anchor_tesla_lead, insv_total)
         method = "visual"
         if vis_peak < 0.30:        # weak lock -> keep the bare timestamp anchor
@@ -489,11 +486,23 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     ass = out_dir / "telemetry.ass"
     ass.write_text(S.telemetry_ass(rows, play_w=2560, play_h=720))
 
+    # --- optional reference colour match: bake diag(gain) @ front_A into the
+    # Tesla panel so the composite is colour-consistent with the ride view. ---
+    right_matrix = None
+    if reference_gain is not None:
+        from dcwb.matrix import from_diag
+        front_A = Profile.from_json(Path(profiles_dir) / "front.json").matrix_3x3
+        right_matrix = from_diag(*reference_gain) @ front_A
+        print(f"[sync] reference colour match: gain={list(reference_gain)} "
+              f"-> Tesla matrix diag≈[{right_matrix[0,0]:.3f}, {right_matrix[1,1]:.3f}, "
+              f"{right_matrix[2,2]:.3f}]", file=sys.stderr)
+
     combined = out_dir / f"combined-{recent}.mp4"
     render_sidebyside(display, tesla_cat, combined,
                       left_start=left_start, right_start=right_start,
                       duration=cap, ass_path=ass, encoder=enc,
-                      bitrate_kbps=bitrate_kbps, panel_h=720)
+                      bitrate_kbps=bitrate_kbps, panel_h=720,
+                      right_matrix=right_matrix)
 
     manifest = S.write_sync_manifest(
         out_dir, res, insta_display=str(display), tesla_concat=str(tesla_cat),
@@ -504,6 +513,15 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
 
 
 def _cmd_sync_insta360(args) -> int:
+    # Reference colour match: explicit --reference-gain wins, else pull
+    # awb.reference_gain from the pipeline config (the match-reference --write target).
+    ref_gain = None
+    if args.reference_gain:
+        ref_gain = tuple(float(x) for x in args.reference_gain)
+    elif args.pipeline_config and args.pipeline_config.exists():
+        rg = json.loads(args.pipeline_config.read_text()).get("awb", {}).get("reference_gain")
+        if rg:
+            ref_gain = tuple(float(x) for x in rg)
     return run_sync_insta360(
         insv=args.insv, recent=args.recent, insta_flat=args.insta_flat,
         source=args.source, out_root=args.out_root,
@@ -512,7 +530,77 @@ def _cmd_sync_insta360(args) -> int:
         insta_yaw=args.insta_yaw, insta_pitch=args.insta_pitch,
         insta_roll=args.insta_roll, insta_hfov=args.insta_hfov,
         insta_vfov=args.insta_vfov, start_offset=args.start_offset,
-        visual_offset=args.visual_offset)
+        visual_offset=args.visual_offset,
+        reference_gain=ref_gain, profiles_dir=args.profiles_dir)
+
+
+def run_match_reference(*, reference, recent, source, profiles_dir, pipeline_config,
+                        write, samples, max_window, encoder, bitrate_kbps) -> int:
+    """Compute a reference-camera match gain and (optionally) write it into
+    pipeline.json's awb.reference_gain. The window is anchored from the
+    reference's creation_time; the actual gain is computed by
+    refmatch.compute_reference_gain (visual time-sync + paired Shades-of-Gray)."""
+    import tempfile
+    from datetime import timedelta
+    from dcwb import ffmpeg_wrap
+    from dcwb.sync import select_front_clips
+
+    reference = Path(reference)
+    front_profile = Profile.from_json(Path(profiles_dir) / "front.json")
+
+    start_jst = insta360.to_jst(insta360.read_creation_time(reference))
+    total = ffmpeg_wrap.probe_duration(reference)
+    window = min(total, max_window) if max_window else total
+    end_jst = start_jst + timedelta(seconds=window)
+
+    day_dir = Path(source) / "RecentClips" / recent
+    fronts = select_front_clips(day_dir, start_jst, end_jst)
+    if not fronts:
+        print(f"[match-reference] no Tesla front clips overlap in {day_dir}", file=sys.stderr)
+        return 1
+    print(f"[match-reference] {len(fronts)} Tesla front clips "
+          f"(window {start_jst.isoformat()} +{total:.0f}s)", file=sys.stderr)
+
+    with tempfile.TemporaryDirectory(prefix="dcwb-refmatch-") as work:
+        try:
+            gain, peak, n = compute_reference_gain(
+                reference, fronts, front_profile,
+                start_jst=start_jst, work_dir=Path(work), samples=samples,
+                max_window=max_window, encoder=encoder, bitrate_kbps=bitrate_kbps,
+            )
+        except ReferenceGainError as e:
+            print(f"[match-reference] {e}", file=sys.stderr)
+            return 1
+
+    g_r, g_g, g_b = (round(float(x), 5) for x in gain)
+    print(f"[match-reference] reference_gain=[{g_r}, {g_g}, {g_b}] "
+          f"peak={peak:.3f} samples={n}", file=sys.stderr)
+    if peak < 0.30:
+        print(f"[match-reference] WARNING weak visual lock (peak={peak:.3f}); "
+              f"the gain may be unreliable", file=sys.stderr)
+
+    full = json.loads(pipeline_config.read_text()) if pipeline_config.exists() else {}
+    awb = full.get("awb", {})
+    gmin = float(awb.get("gain_min", 0.7)); gmax = float(awb.get("gain_max", 1.5))
+    if any(g < gmin or g > gmax for g in (g_r, g_g, g_b)):
+        print(f"[match-reference] WARNING gain outside [{gmin}, {gmax}]; render will "
+              f"drop B (A-only fallback) for this gain", file=sys.stderr)
+
+    print(json.dumps({"reference_gain": [g_r, g_g, g_b], "peak": peak, "samples": n}))
+
+    if write:
+        full.setdefault("awb", {})["reference_gain"] = [g_r, g_g, g_b]
+        pipeline_config.write_text(json.dumps(full, indent=2))
+        print(f"[match-reference] wrote awb.reference_gain → {pipeline_config}", file=sys.stderr)
+    return 0
+
+
+def _cmd_match_reference(args) -> int:
+    return run_match_reference(
+        reference=args.reference, recent=args.recent, source=args.source,
+        profiles_dir=args.profiles_dir, pipeline_config=args.pipeline_config,
+        write=args.write, samples=args.samples, max_window=args.max_window,
+        encoder=args.encoder, bitrate_kbps=args.bitrate_kbps)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -527,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
         "prune-recent": _cmd_prune_recent,
         "highlight-day": _cmd_highlight_day,
         "sync-insta360": _cmd_sync_insta360,
+        "match-reference": _cmd_match_reference,
     }[args.cmd](args)
 
 if __name__ == "__main__":

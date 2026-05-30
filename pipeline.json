@@ -7,7 +7,8 @@
     "saturation_low": 0.03,
     "gain_min": 0.7,
     "gain_max": 1.5,
-    "night_attenuation": 0.5
+    "night_attenuation": 0.5,
+    "reference_gain": null
   },
   "prune": {
     "motion_threshold": 2.0,

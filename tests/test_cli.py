@@ -438,6 +438,101 @@ def test_highlight_day_prints_progress_to_stderr(tmp_path, monkeypatch, capsys):
     assert "interest=8 海沿い" in err
 
 
+def _setup_match_reference(tmp_path, monkeypatch, gain=((1.2, 1.0, 0.8), 0.7, 8), total=600.0):
+    from datetime import datetime, timezone
+    from dcwb import cli, refmatch
+    import dcwb.refmatch as R
+    from dcwb.profile import Profile, CalibrationMeta
+    import numpy as np
+
+    # front profile + an overlapping RecentClips front clip
+    profiles = tmp_path / "profiles"; profiles.mkdir()
+    Profile.from_white_point(
+        "front", np.array([200.0, 200.0, 200.0]),
+        CalibrationMeta(samples_used=1, events_sampled=1, method="t",
+                        calibrated_at=datetime.now(timezone.utc), samples_per_event_max=1),
+    ).to_json(profiles / "front.json")
+    day = tmp_path / "usb" / "RecentClips" / "2026-05-27"
+    day.mkdir(parents=True)
+    (day / "2026-05-27_13-00-00-front.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(cli.insta360, "read_creation_time",
+                        lambda p: datetime(2026, 5, 27, 4, 0, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr("dcwb.ffmpeg_wrap.probe_duration", lambda p: total)
+
+    captured = {}
+    def fake_compute(reference, fronts, front_profile, **kw):
+        captured["reference"] = reference
+        captured["fronts"] = fronts
+        captured.update(kw)
+        return gain
+    monkeypatch.setattr(cli, "compute_reference_gain", fake_compute)
+    return profiles, day, captured
+
+
+def test_match_reference_prints_gain_without_write(tmp_path, monkeypatch, capsys):
+    profiles, day, captured = _setup_match_reference(tmp_path, monkeypatch)
+    ref = tmp_path / "ride.insv"; ref.write_bytes(b"x")
+    cfg = tmp_path / "pipeline.json"
+    cfg.write_text(json.dumps({"awb": {"gain_min": 0.7}}))
+
+    rc = main(["match-reference", str(ref), "--recent", "2026-05-27",
+               "--source", str(tmp_path / "usb"), "--profiles-dir", str(profiles),
+               "--pipeline-config", str(cfg), "--samples", "12", "--encoder", "libx264"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out.strip().splitlines()[-1])
+    assert payload["reference_gain"] == [1.2, 1.0, 0.8]
+    assert captured["samples"] == 12
+    assert captured["fronts"][0].name == "2026-05-27_13-00-00-front.mp4"
+    # without --write the config is untouched
+    assert json.loads(cfg.read_text()) == {"awb": {"gain_min": 0.7}}
+
+
+def test_match_reference_write_updates_pipeline_preserving_keys(tmp_path, monkeypatch, capsys):
+    profiles, day, captured = _setup_match_reference(tmp_path, monkeypatch)
+    ref = tmp_path / "ride.insv"; ref.write_bytes(b"x")
+    cfg = tmp_path / "pipeline.json"
+    cfg.write_text(json.dumps({"awb": {"gain_min": 0.7, "night_attenuation": 0.5},
+                               "look": {"saturation": 1.1}}))
+
+    rc = main(["match-reference", str(ref), "--recent", "2026-05-27",
+               "--source", str(tmp_path / "usb"), "--profiles-dir", str(profiles),
+               "--pipeline-config", str(cfg), "--write"])
+    assert rc == 0
+    written = json.loads(cfg.read_text())
+    assert written["awb"]["reference_gain"] == [1.2, 1.0, 0.8]
+    assert written["awb"]["gain_min"] == 0.7
+    assert written["awb"]["night_attenuation"] == 0.5
+    assert written["look"] == {"saturation": 1.1}
+
+
+def test_match_reference_caps_front_window(tmp_path, monkeypatch):
+    """--max-window bounds the anchor window so a long reference does not pull in
+    (and concat) the whole drive's front clips."""
+    profiles, day, captured = _setup_match_reference(tmp_path, monkeypatch, total=1800.0)
+    (day / "2026-05-27_13-15-00-front.mp4").write_bytes(b"x")  # outside the 600s window
+    ref = tmp_path / "ride.insv"; ref.write_bytes(b"x")
+    rc = main(["match-reference", str(ref), "--recent", "2026-05-27",
+               "--source", str(tmp_path / "usb"), "--profiles-dir", str(profiles),
+               "--pipeline-config", str(tmp_path / "absent.json"), "--max-window", "600"])
+    assert rc == 0
+    assert [p.name for p in captured["fronts"]] == ["2026-05-27_13-00-00-front.mp4"]
+    assert captured["max_window"] == 600.0
+
+
+def test_match_reference_errors_when_no_front_clips(tmp_path, monkeypatch, capsys):
+    profiles, day, captured = _setup_match_reference(tmp_path, monkeypatch)
+    # remove the only front clip → no overlap
+    (day / "2026-05-27_13-00-00-front.mp4").unlink()
+    ref = tmp_path / "ride.insv"; ref.write_bytes(b"x")
+    rc = main(["match-reference", str(ref), "--recent", "2026-05-27",
+               "--source", str(tmp_path / "usb"), "--profiles-dir", str(profiles),
+               "--pipeline-config", str(tmp_path / "absent.json")])
+    assert rc == 1
+    assert "front" in capsys.readouterr().err.lower()
+
+
 def test_sync_insta360_parses_args(monkeypatch, tmp_path):
     from dcwb import cli
     captured = {}
@@ -452,3 +547,30 @@ def test_sync_insta360_parses_args(monkeypatch, tmp_path):
     assert captured["recent"] == "2026-05-27"
     assert captured["encoder"] == "libx264"
     assert str(insv) in [str(p) for p in captured["insv"]]
+    assert captured["reference_gain"] is None  # default: no colour match
+
+
+def test_sync_insta360_forwards_reference_gain_flag(monkeypatch, tmp_path):
+    from dcwb import cli
+    captured = {}
+    monkeypatch.setattr(cli, "run_sync_insta360",
+                        lambda **kw: (captured.update(kw) or 0), raising=False)
+    insv = tmp_path / "VID.insv"; insv.write_bytes(b"")
+    rc = cli.main(["sync-insta360", str(insv), "--recent", "2026-05-27",
+                   "--reference-gain", "1.02", "1.0", "0.94", "--encoder", "libx264"])
+    assert rc == 0
+    assert captured["reference_gain"] == (1.02, 1.0, 0.94)
+
+
+def test_sync_insta360_reads_reference_gain_from_pipeline(monkeypatch, tmp_path):
+    from dcwb import cli
+    captured = {}
+    monkeypatch.setattr(cli, "run_sync_insta360",
+                        lambda **kw: (captured.update(kw) or 0), raising=False)
+    cfg = tmp_path / "pipeline.json"
+    cfg.write_text(json.dumps({"awb": {"reference_gain": [1.01, 1.0, 0.95]}}))
+    insv = tmp_path / "VID.insv"; insv.write_bytes(b"")
+    rc = cli.main(["sync-insta360", str(insv), "--recent", "2026-05-27",
+                   "--pipeline-config", str(cfg), "--encoder", "libx264"])
+    assert rc == 0
+    assert captured["reference_gain"] == (1.01, 1.0, 0.95)

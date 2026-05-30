@@ -240,18 +240,24 @@ def render_sidebyside(
     ass_path: Path | None = None,
     encoder: str = "h264_videotoolbox", bitrate_kbps: int = 12000,
     panel_h: int = 720,
+    right_matrix: Matrix3x3 | None = None,
 ) -> None:
     """hstack two videos, each trimmed from its own start so both share t=0,
-    scaled to a common height, with optional burned ASS telemetry."""
+    scaled to a common height, with optional burned ASS telemetry.
+
+    When ``right_matrix`` is given, that 3x3 RGB transform (colorchannelmixer) is
+    applied to the right panel only — used to bake the reference match gain into
+    the Tesla side so the composite is colour-consistent with the ride view."""
     encoder = resolve_encoder(encoder)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     scale = f"scale=-2:{panel_h}"
+    right_cm = f"{_colorchannelmixer(right_matrix)}," if right_matrix is not None else ""
     graph = (
         f"[0:v]trim=start={left_start:.3f}:duration={duration:.3f},"
         f"setpts=PTS-STARTPTS,{scale}[l];"
         f"[1:v]trim=start={right_start:.3f}:duration={duration:.3f},"
-        f"setpts=PTS-STARTPTS,{scale}[r];"
+        f"setpts=PTS-STARTPTS,{right_cm}{scale}[r];"
         f"[l][r]hstack=inputs=2[stacked]"
     )
     if ass_path is not None:

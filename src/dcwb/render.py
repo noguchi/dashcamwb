@@ -116,9 +116,17 @@ def render_event(
     else:
         attenuation = 1.0 if is_daytime(ts, lat=lat, lon=lon) else float(awb_cfg["night_attenuation"])
 
+    # Reference-camera match gain (B-layer replacement): when set, every clip of
+    # every camera uses this single fixed gain as B instead of a per-clip
+    # gray-world estimate, so the 6 cameras land on the reference camera's tone.
+    # Absent/null → legacy per-clip estimate_scene_gain (behaviour unchanged).
+    ref_gain = awb_cfg.get("reference_gain")
+    reference_gain = tuple(float(x) for x in ref_gain) if ref_gain else None
+
     snapshot: dict = {
         "event": event_dir.name,
         "attenuation": attenuation,
+        "reference_gain": list(reference_gain) if reference_gain else None,
         "clips": [],
     }
 
@@ -126,13 +134,16 @@ def render_event(
         try:
             cam = _camera_of(clip)
             prof = profiles[cam]
-            scene_gain = estimate_scene_gain(
-                clip, prof,
-                samples_per_clip=int(awb_cfg["samples_per_clip"]),
-                sat_high=float(awb_cfg["saturation_high"]),
-                sat_low=float(awb_cfg["saturation_low"]),
-                p=int(awb_cfg["minkowski_p"]),
-            )
+            if reference_gain is not None:
+                scene_gain = reference_gain
+            else:
+                scene_gain = estimate_scene_gain(
+                    clip, prof,
+                    samples_per_clip=int(awb_cfg["samples_per_clip"]),
+                    sat_high=float(awb_cfg["saturation_high"]),
+                    sat_low=float(awb_cfg["saturation_low"]),
+                    p=int(awb_cfg["minkowski_p"]),
+                )
             final_matrix = compose_clip_matrix(
                 prof, scene_gain,
                 gain_min=float(awb_cfg["gain_min"]),
