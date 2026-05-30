@@ -71,3 +71,31 @@ def compute_offset(tesla: MotionSeries, insta: MotionSeries,
     if peak_y >= peak_a:
         return SyncResult(delta_y, peak_y, "yaw_rate", anchor_guess)
     return SyncResult(delta_a, peak_a, "accel_x", anchor_guess)
+
+
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+JST = timezone(timedelta(hours=9))
+_FRONT_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})-front\.mp4$")
+
+def _front_start(name: str):
+    m = _FRONT_RE.match(name)
+    if not m:
+        return None
+    y, mo, d, h, mi, s = map(int, m.groups())
+    return datetime(y, mo, d, h, mi, s, tzinfo=JST)
+
+def select_front_clips(day_dir: Path, start: datetime, end: datetime,
+                       seg_seconds: float = 60.0) -> list[Path]:
+    """Front clips whose [clip_start, clip_start+seg] overlaps [start, end]."""
+    out = []
+    for p in sorted(day_dir.glob("*-front.mp4")):
+        cs = _front_start(p.name)
+        if cs is None:
+            continue
+        ce = cs + timedelta(seconds=seg_seconds)
+        if ce > start and cs < end:
+            out.append(p)
+    return out

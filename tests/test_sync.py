@@ -38,3 +38,18 @@ def test_compute_offset_recovers_injected_delta():
     assert abs(res.delta_s - delta_true) < 0.05
     assert res.signal == "yaw_rate"
     assert res.confidence > 0.8
+
+from datetime import datetime, timedelta, timezone
+from dcwb.sync import select_front_clips
+_JST = timezone(timedelta(hours=9))
+
+def test_select_front_clips_overlapping_window(tmp_path):
+    names = ["2026-05-27_17-16-48-front.mp4", "2026-05-27_17-17-04-front.mp4",
+             "2026-05-27_17-18-05-front.mp4", "2026-05-27_17-30-07-front.mp4"]
+    for n in names:
+        (tmp_path / n).write_bytes(b"")
+    start = datetime(2026, 5, 27, 17, 17, 57, tzinfo=_JST)
+    end = start + timedelta(seconds=70)
+    chosen = select_front_clips(tmp_path, start, end, seg_seconds=60.0)
+    got = [p.name for p in chosen]
+    assert got == ["2026-05-27_17-17-04-front.mp4", "2026-05-27_17-18-05-front.mp4"]
