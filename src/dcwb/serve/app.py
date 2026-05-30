@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from datetime import datetime
 from pathlib import Path
 from flask import (
@@ -165,5 +166,36 @@ def create_app(
     def reindex():
         index_state["sources"] = scan_sources(usb_root)
         return redirect(url_for("root"), code=303)
+
+    sync_root = (out_root / "sync")
+
+    @app.route("/sync/<date>")
+    def sync_player(date):
+        return render_template("sync_player.html.j2", date=date)
+
+    @app.route("/sync-data/<date>")
+    def sync_data(date):
+        f = (sync_root / date / "sync.json").resolve()
+        if not f.is_relative_to(sync_root.resolve()) or not f.exists():
+            abort(404)
+        return send_file(f, mimetype="application/json", conditional=False)
+
+    @app.route("/sync-nudge/<date>", methods=["POST"])
+    def sync_nudge(date):
+        f = (sync_root / date / "sync.json").resolve()
+        if not f.is_relative_to(sync_root.resolve()) or not f.exists():
+            abort(404)
+        data = json.loads(f.read_text())
+        data["delta_s"] = float(request.get_json()["delta_s"])
+        f.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        return jsonify(ok=True, delta_s=data["delta_s"])
+
+    @app.route("/sync-video/<date>/<path:filename>")
+    def sync_video(date, filename):
+        base = (sync_root / date).resolve()
+        target = (base / filename).resolve()
+        if not target.is_relative_to(base) or not target.exists():
+            abort(404)
+        return send_file(target, mimetype="video/mp4", conditional=True)
 
     return app
