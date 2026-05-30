@@ -119,7 +119,25 @@ uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style 
 uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style cruise
 ```
 
-出力は `highlights/<date>/highlight-<style>.mp4` と `highlight-<style>.json` です。初期版は Tesla SEI テレメトリで DRIVE/REVERSE が確認できた front クリップだけを対象にし、速度・速度変化・画面変化・明るさからスコアを付けます。SEI が無いクリップも含めたい場合は `--allow-no-sei` を指定できますが、manifest では低信頼として記録されます。
+出力は `highlights/<date>/highlight-<style>.mp4` と `highlight-<style>.json` です。Tesla SEI テレメトリで DRIVE/REVERSE が確認できた front クリップだけを対象にします。SEI が無いクリップも含めたい場合は `--allow-no-sei` を指定できますが、manifest では低信頼として記録されます。
+
+### 選定スコア（AI 既定 / MVP フォールバック）
+
+既定では、走行と判定された各クリップを LAN 上の Vision-Language Model（VLM）で採点します。テレメトリは「走った／停まった」だけを判定し、「ハイライトとしてどれだけ良いか」は VLM が `interest`（0–10）で評価します。各クリップから 3 フレーム（10% / 50% / 90%）を抜き出して 1 回の呼び出しにまとめ、結果（`interest` / `scene_tags` / `caption` / `drive_quality`）は manifest にのみ記録します（字幕焼き込みはしません）。VLM の結果は `highlights/<date>/vlm-cache.json` にクリップ単位でキャッシュされ、`fast` と `cruise` は同じ 1 日分のキャッシュを共有します。
+
+VLM サーバは OpenAI 互換エンドポイント（例: LM Studio）で、`pipeline.json` の `highlight_ai` セクションで設定します。
+
+```bash
+# 設定を上書きして実行
+uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style cruise \
+  --vlm-endpoint http://galleria.local:1234/v1 --vlm-model google/gemma-4-26b-a4b
+```
+
+- `--vlm-endpoint` / `--vlm-model`: `highlight_ai.endpoint` / `.model` を上書き。
+- `--allow-no-ai`: VLM が到達不能なとき、エラーで止めずに従来の MVP スコアラ（速度・速度変化・画面変化・明るさ）にフォールバックします（manifest の `selection` は `mvp-fallback`）。指定しない場合、エンドポイントに到達できなければフレーム抽出や ffmpeg を実行する前に中断します（無駄な処理をしない）。
+- `--no-vlm-cache`: その日のキャッシュを無視して再取得します。
+
+VLM はビジョン対応モデルが必要です（Gemma なら 3 系以降のマルチモーダル、本リポジトリの既定は `google/gemma-4-26b-a4b`）。LM Studio が `response_format: json_schema` を honor しない場合は `highlight_ai.use_json_schema` を `false` にすると、プロンプト誘導 + 寛容なパースに切り替わります。
 
 ## 設定 (`pipeline.json`)
 
@@ -136,6 +154,18 @@ uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style 
     "gain_min": 0.7,
     "gain_max": 1.5,
     "night_attenuation": 0.5
+  },
+  "highlight_ai": {
+    "endpoint": "http://galleria.local:1234/v1",
+    "model": "google/gemma-4-26b-a4b",
+    "api_key": "lm-studio",
+    "frames_per_clip": 3,
+    "frame_max_edge": 512,
+    "timeout_sec": 120,
+    "max_retries": 1,
+    "interest_min": 1,
+    "system_prompt": null,
+    "use_json_schema": true
   }
 }
 ```
@@ -146,6 +176,13 @@ uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style 
 | `saturation_high` / `saturation_low` | Shades-of-Gray で除外する飽和上下限 |
 | `gain_min` / `gain_max` | B レイヤのゲインがこの範囲外なら B を破棄して A のみで補正 |
 | `night_attenuation` | 夜間判定時に B レイヤを 1.0 に向けて線形減衰させる係数 |
+| `highlight_ai.endpoint` / `.model` | ハイライト選定に使う VLM の OpenAI 互換エンドポイントとモデル ID |
+| `highlight_ai.frames_per_clip` / `.frame_max_edge` | 1 クリップから VLM に送るフレーム数と長辺リサイズ上限(px) |
+| `highlight_ai.interest_min` | この `interest` 未満のクリップは選定から除外 |
+| `highlight_ai.system_prompt` | 評価基準のシステムプロンプト（`null` で組み込みデフォルト） |
+| `highlight_ai.use_json_schema` | `response_format: json_schema` を使う。`false` でプロンプト誘導パースに切替 |
+| `highlight_ai.max_tokens` | VLM の最大生成トークン。小さすぎると生成が打ち切られ繰り返しループに陥る（既定 768） |
+| `highlight_ai.temperature` / `.repeat_penalty` / `.frequency_penalty` | サンプリング。LM Studio の UI 設定は OpenAI 互換 API に効かないため、ここから毎リクエスト送る。`repeat_penalty`/`frequency_penalty` は繰り返しループの抑制に効く |
 
 ## テスト
 

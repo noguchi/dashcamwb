@@ -26,7 +26,7 @@ uv run dcwb render <event_dir>
 CLI サブコマンド（`pyproject.toml` の `[project.scripts]` で `dcwb` を公開）:
 `calibrate` / `render <event_dir>` / `verify <event_dir>` / `render-all --source <dir>` / `serve` / `prune-recent` / `highlight-day`。
 
-`highlight-day` は `RecentClips/<date>` の `front` カメラだけからドライブ記録向けハイライトを作る。MVP は AI なしで、SEI テレメトリの DRIVE/REVERSE、平均速度、速度変化、OpenCV の明るさ・画面変化量をスコア化し、`fast` と `cruise` の2スタイルで excerpt を選ぶ。出力 manifest には採用理由とスコア内訳を必ず残す。
+`highlight-day` は `RecentClips/<date>` の `front` カメラだけからドライブ記録向けハイライトを作る。テレメトリ（SEI の DRIVE/REVERSE）は「走った／停まった」だけを判定し、走行クリップの「ハイライトとしての良さ」は LAN 上の VLM が `interest`(0–10) で採点する（既定パス）。VLM 結果（`interest`/`scene_tags`/`caption`/`drive_quality`）は manifest にのみ記録し、字幕焼き込みはしない。VLM が到達不能なときは `--allow-no-ai` で MVP スコアラ（平均速度・速度変化・OpenCV の明るさ・画面変化量）にフォールバックする（指定なしならフレーム抽出前に中断）。`fast` と `cruise` の2スタイルがあり、出力 manifest には採用理由とスコア内訳・`skips` を必ず残す。VLM 境界は `vlm.py`、選定/キャッシュは `highlight.py`、設定は `pipeline.json` の `highlight_ai` セクション。詳細は `docs/superpowers/specs/2026-05-29-vlm-drive-highlight-design.md`。
 
 ## アーキテクチャ
 
