@@ -103,11 +103,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # (yaw=180 faces forward away from the rear lens; roll=180 corrects an
     # upside-down-mounted camera).
     py.add_argument("--insta-yaw", type=float, default=180.0)
-    py.add_argument("--insta-pitch", type=float, default=20.0,
-                    help="Downward tilt; ~20 frames forward road + the center control panel")
+    py.add_argument("--insta-pitch", type=float, default=12.0,
+                    help="Downward tilt; ~12 frames from the rearview-mirror top "
+                         "to the center-screen bottom")
     py.add_argument("--insta-roll", type=float, default=180.0)
-    py.add_argument("--insta-hfov", type=float, default=110.0)
-    py.add_argument("--insta-vfov", type=float, default=70.0)
+    py.add_argument("--insta-hfov", type=float, default=82.0)
+    py.add_argument("--insta-vfov", type=float, default=52.0)
     py.add_argument("--start-offset", type=float, default=0.0,
                     help="Begin the rendered window this many seconds into the "
                          "Insta360 recording (skip parked footage at the start)")
@@ -349,8 +350,8 @@ def _detect_visual_offset(insv, tesla_cat, anchor_tesla_lead, insv_total,
 
 def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                       encoder, bitrate_kbps, max_duration=None,
-                      insta_yaw=180.0, insta_pitch=20.0, insta_roll=180.0,
-                      insta_hfov=110.0, insta_vfov=70.0, start_offset=0.0,
+                      insta_yaw=180.0, insta_pitch=12.0, insta_roll=180.0,
+                      insta_hfov=82.0, insta_vfov=52.0, start_offset=0.0,
                       visual_offset=0.0) -> int:
     """Orchestrate Insta360<->Tesla sync. A coarse anchor comes from file
     timestamps (Insta creation_time vs Tesla front filenames); the fine
