@@ -52,3 +52,36 @@ def read_segment_telemetry(front_clip: Path) -> SegmentTelemetry:
     speed_delta = max_speed - (min_speed if min_speed is not None else max_speed)
     return SegmentTelemetry(frames > 0, frames, counts, drove, max_speed,
                             avg_speed, speed_delta, speed_count)
+
+
+@dataclass
+class FrameTelemetry:
+    frame_index: int
+    gear: str
+    speed_mps: float
+    heading_deg: float
+    steering_deg: float
+    accel_x: float
+    lat: float
+    lon: float
+
+
+def iter_segment_frames(front_clip: Path):
+    """Yield FrameTelemetry per SEI frame, in capture order. Fail-safe: a
+    read/parse error yields nothing (caller falls back)."""
+    try:
+        with open(front_clip, "rb") as fp:
+            offset, size = _sx.find_mdat(fp)
+            for i, meta in enumerate(_sx.iter_sei_messages(fp, offset, size)):
+                yield FrameTelemetry(
+                    frame_index=i,
+                    gear=_GEAR_NAME.get(meta.gear_state, str(meta.gear_state)),
+                    speed_mps=float(meta.vehicle_speed_mps or 0.0),
+                    heading_deg=float(meta.heading_deg or 0.0),
+                    steering_deg=float(meta.steering_wheel_angle or 0.0),
+                    accel_x=float(meta.linear_acceleration_mps2_x or 0.0),
+                    lat=float(meta.latitude_deg or 0.0),
+                    lon=float(meta.longitude_deg or 0.0),
+                )
+    except Exception:
+        return
