@@ -271,7 +271,7 @@ def render_sidebyside(
 
 
 def reframe_insv(
-    insv: Path, dst: Path, yaw: float = 0.0, pitch: float = -10.0,
+    insv: Path, dst: Path, yaw: float = 0.0, pitch: float = -10.0, roll: float = 0.0,
     out_w: int = 1920, out_h: int = 1080, h_fov: float = 100.0, v_fov: float = 60.0,
     encoder: str = "h264_videotoolbox", bitrate_kbps: int = 12000,
     start: float = 0.0, duration: float | None = None,
@@ -289,7 +289,7 @@ def reframe_insv(
     # Reference them as [0:v:0] and [0:v:1] within the single-input filter graph.
     graph = (
         "[0:v:0][0:v:1]hstack=inputs=2[df];"
-        f"[df]v360=dfisheye:flat:yaw={yaw}:pitch={pitch}:"
+        f"[df]v360=dfisheye:flat:yaw={yaw}:pitch={pitch}:roll={roll}:"
         f"h_fov={h_fov}:v_fov={v_fov}:w={out_w}:h={out_h}[outv]"
     )
     trim = []
