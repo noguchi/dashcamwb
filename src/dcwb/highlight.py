@@ -615,7 +615,10 @@ def highlight_day(
         mc["white_balance"] = wb_info
         manifest_clips.append(mc)
     if rendered:
-        concat_clips(rendered, output_path, encoder=encoder, bitrate_kbps=bitrate_kbps)
+        concat_clips(
+            rendered, output_path, encoder=encoder, bitrate_kbps=bitrate_kbps,
+            tag_bt709=bool(look is not None and look.tag_bt709),
+        )
     manifest = {
         "date": date,
         "style": style,

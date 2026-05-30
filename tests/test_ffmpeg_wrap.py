@@ -125,6 +125,42 @@ def test_cut_clip_look_boosts_saturation(tmp_path):
     assert (lf[0] - lf[2]) > (pf[0] - pf[2]) + 3
 
 
+def _color_tags(path):
+    import subprocess
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=color_space,color_primaries,color_transfer",
+         "-of", "default=noprint_wrappers=1", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return dict(line.split("=", 1) for line in out.strip().splitlines())
+
+
+def test_cut_clip_look_tags_bt709(tmp_path):
+    from dcwb.ffmpeg_wrap import cut_clip, LookConfig
+    from tests.fixtures.make_synthetic import make_clip
+    src = tmp_path / "src.mp4"
+    make_clip(src, (1.0, 1.0, 1.0), duration_sec=1.0)
+    dst = tmp_path / "out.mp4"
+    cut_clip(src, dst, 0.0, 0.5, encoder="libx264", bitrate_kbps=2000, look=LookConfig(tag_bt709=True))
+    tags = _color_tags(dst)
+    assert tags["color_primaries"] == "bt709"
+    assert tags["color_transfer"] == "bt709"
+    assert tags["color_space"] == "bt709"
+
+
+def test_concat_clips_tags_bt709_on_final_output(tmp_path):
+    from dcwb.ffmpeg_wrap import concat_clips
+    from tests.fixtures.make_synthetic import make_motion_clip
+    a = tmp_path / "a.mp4"; b = tmp_path / "b.mp4"; out = tmp_path / "j.mp4"
+    make_motion_clip(a, duration_sec=1.0)
+    make_motion_clip(b, duration_sec=1.0)
+    concat_clips([a, b], out, encoder="libx264", bitrate_kbps=1000, tag_bt709=True)
+    tags = _color_tags(out)
+    assert tags["color_primaries"] == "bt709"
+    assert tags["color_transfer"] == "bt709"
+
+
 def test_concat_clips_writes_playable_video(tmp_path):
     from dcwb.ffmpeg_wrap import concat_clips, probe_duration
     from tests.fixtures.make_synthetic import make_motion_clip

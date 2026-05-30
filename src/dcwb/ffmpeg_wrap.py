@@ -34,10 +34,19 @@ class LookConfig:
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def filters(self) -> list[str]:
-        return [
+        fs = [
             f"curves=master='{self.scurve}'",
             f"eq=saturation={self.saturation:.4f}:gamma={self.gamma:.4f}",
         ]
+        if self.tag_bt709:
+            fs.append(_BT709_SETPARAMS)
+        return fs
+
+
+# setparams tags the frames in the filter graph (output -color_* flags don't
+# propagate reliably through a -vf chain). Range is left untouched so the
+# luminance interpretation matches the untagged default (no level shift).
+_BT709_SETPARAMS = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
 
 
 @functools.lru_cache(maxsize=1)
@@ -217,10 +226,6 @@ def cut_clip(
         "-c:v", encoder,
         "-b:v", f"{bitrate_kbps}k",
         "-pix_fmt", "yuv420p",
-    ]
-    if look is not None and look.tag_bt709:
-        cmd += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
-    cmd += [
         "-movflags", "+faststart",
         "-f", "mp4",
         str(tmp),
@@ -234,6 +239,7 @@ def concat_clips(
     dst: Path,
     encoder: str = "h264_videotoolbox",
     bitrate_kbps: int = 12000,
+    tag_bt709: bool = False,
 ) -> None:
     if not clips:
         raise ValueError("concat_clips requires at least one clip")
@@ -248,8 +254,12 @@ def concat_clips(
     for clip in clips:
         cmd += ["-i", str(clip)]
     streams = "".join(f"[{i}:v]" for i in range(len(clips)))
+    # The concat filter does not reliably carry per-input color tags onto the
+    # output, so re-tag the joined stream here when requested.
+    graph = f"{streams}concat=n={len(clips)}:v=1:a=0[c];[c]{_BT709_SETPARAMS}[outv]" if tag_bt709 \
+        else f"{streams}concat=n={len(clips)}:v=1:a=0[outv]"
     cmd += [
-        "-filter_complex", f"{streams}concat=n={len(clips)}:v=1:a=0[outv]",
+        "-filter_complex", graph,
         "-map", "[outv]",
         "-an",
         "-c:v", encoder,
