@@ -141,6 +141,21 @@ uv run dcwb highlight-day --source /Volumes/sentryusb --date 2026-05-08 --style 
 
 VLM はビジョン対応モデルが必要です（Gemma なら 3 系以降のマルチモーダル、本リポジトリの既定は `google/gemma-4-26b-a4b`）。LM Studio が `response_format: json_schema` を honor しない場合は `highlight_ai.use_json_schema` を `false` にすると、プロンプト誘導 + 寛容なパースに切り替わります。
 
+## Insta360 との同期（`sync-insta360`）
+
+乗車視点の Insta360 映像（`.insv`）と Tesla ドラレコ front クリップを時間同期し、横並び合成 mp4 と Web プレイヤーを生成します。
+
+設計仕様: [`docs/superpowers/specs/2026-05-30-insta360-tesla-sync-design.md`](docs/superpowers/specs/2026-05-30-insta360-tesla-sync-design.md)
+
+```bash
+uv run dcwb sync-insta360 <event.insv ...> --recent <YYYY-MM-DD> [--insta-flat <flat.mp4>] [--out-root sync-work]
+# then: uv run dcwb serve --out-root sync-work  → open /sync/<YYYY-MM-DD> to fine-tune with the nudge slider
+```
+
+同期は 3 段階のハイブリッド方式で行います。まず `.insv` の `creation_time`(UTC) と front ファイル名(JST) で粗オフセットを算出し（①タイムスタンプ・アンカー）、次に Tesla の GPS course 由来ヨーレートと Insta360 IMU ジャイロの相互相関で精密化し（②クロスコリレーション）、最後に Web プレイヤーの手動ナッジで確定します（③）。相互相関の信頼度が低い場合（< 0.35）は①アンカーへフォールバックします。
+
+出力は `--out-root`（既定 `sync-work`）の `sync/<YYYY-MM-DD>/` に `combined-<date>.mp4`（横並び＋テレメトリ字幕）、`sync.json`（δ・信頼度・telemetry・パス）が並びます。`--insta-flat` を省略すると ffmpeg の `v360` フィルタで dfisheye→平面に自動リフレームします。Insta360 の 18GB 本体ファイルは末尾のトレーラ（IMU インデックス）だけを `seek` して読むため、フル転送は不要です。
+
 ## 設定 (`pipeline.json`)
 
 リポジトリ同梱のデフォルトは以下です。CLI の `--pipeline-config` で差し替え可能。

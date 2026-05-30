@@ -1,6 +1,10 @@
 from __future__ import annotations
-import numpy as np
+import json
+import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import numpy as np
 
 def unwrap_yaw_rate(headings_deg: np.ndarray, dt: float) -> np.ndarray:
     """deg/s yaw rate from a heading series, robust to 0/360 wraparound."""
@@ -72,11 +76,6 @@ def compute_offset(tesla: MotionSeries, insta: MotionSeries,
         return SyncResult(delta_y, peak_y, "yaw_rate", anchor_guess)
     return SyncResult(delta_a, peak_a, "accel_x", anchor_guess)
 
-
-import json
-import re
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 JST = timezone(timedelta(hours=9))
 _FRONT_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})-front\.mp4$")
