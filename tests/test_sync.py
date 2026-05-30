@@ -53,3 +53,14 @@ def test_select_front_clips_overlapping_window(tmp_path):
     chosen = select_front_clips(tmp_path, start, end, seg_seconds=60.0)
     got = [p.name for p in chosen]
     assert got == ["2026-05-27_17-17-04-front.mp4", "2026-05-27_17-18-05-front.mp4"]
+
+from dcwb.sync import telemetry_ass
+
+def test_telemetry_ass_emits_timed_dialogue():
+    rows = [(0.0, 13.3, 12.0, "DRIVE"), (1.0, 14.0, -5.0, "DRIVE")]  # t, mps, steer, gear
+    ass = telemetry_ass(rows, play_w=2560, play_h=1080)
+    assert "[Script Info]" in ass
+    assert ass.count("Dialogue:") == 2
+    assert "48 km/h" in ass            # 13.3 m/s -> 48 km/h
+    assert "DRIVE" in ass
+    assert "0:00:00.00" in ass         # first event start time

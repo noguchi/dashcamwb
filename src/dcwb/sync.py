@@ -99,3 +99,30 @@ def select_front_clips(day_dir: Path, start: datetime, end: datetime,
         if ce > start and cs < end:
             out.append(p)
     return out
+
+
+def _ass_ts(t: float) -> str:
+    h = int(t // 3600); m = int((t % 3600) // 60); s = t % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def telemetry_ass(rows, play_w: int, play_h: int) -> str:
+    """Build an ASS subtitle (speed/steer/gear) with one event per row.
+    rows: list of (t_seconds, speed_mps, steering_deg, gear)."""
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {play_w}\nPlayResY: {play_h}\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, BackColour, "
+        "Bold, Alignment, MarginL, MarginR, MarginV, BorderStyle, Outline, Shadow\n"
+        "Style: tele,DejaVu Sans Mono,42,&H00FFFFFF,&H80000000,1,1,40,40,40,3,2,0\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+    )
+    lines = []
+    for i, (t, mps, steer, gear) in enumerate(rows):
+        end = rows[i + 1][0] if i + 1 < len(rows) else t + 1.0
+        kmh = round(mps * 3.6)
+        text = f"{kmh} km/h   steer {steer:+.0f}\\N{gear}"
+        lines.append(f"Dialogue: 0,{_ass_ts(t)},{_ass_ts(end)},tele,{text}")
+    return header + "\n".join(lines) + "\n"
