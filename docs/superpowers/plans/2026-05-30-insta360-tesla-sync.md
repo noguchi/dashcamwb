@@ -183,6 +183,15 @@ git commit -m "feat(insta360): read .insv creation_time as UTC + JST helper"
 
 Formalizes the Task 1 spike. The unit test builds a synthetic trailer with the **same packing** the parser reads (roundtrip), so it is self-consistent; a separate slow test validates against the real file when present.
 
+> **CORRECTION from Task 1 spike (authoritative — the placeholder code below is superseded):** the real X4 Air `.insv` (trailer version 3) uses an **offsets-index** layout, NOT a backward record walk, and the IMU is **20-byte raw int16**, NOT float64. Port the validated reader from `.superpowers/scratch/insta360_spike.py`. Real format:
+> - Magic = the literal ASCII bytes `b"8db42d694ccc418790edff439fe026bf"` (32 bytes) — NOT `bytes.fromhex(...)`.
+> - Trailer header = last 72 bytes: `padding[32] | extra_size:u32 LE | version:u32 LE | MAGIC[32]`; `extra_start = file_size - extra_size`.
+> - Offsets table (record id=0) sits just before the header: peek `first_id` at `file_size-(78-1)`; if 0 → `u32 LE table_size`, then table body of `table_size` bytes immediately before it. Entries are 10 bytes: `id:u8 | format:u8 | size:u32 LE | offset:u32 LE`; `offset` is relative to `extra_start`.
+> - IMU record id = 3. Items are 20 bytes LE: `timestamp:u64 (µs) | accel x,y,z: u16 | gyro x,y,z: u16`; value = `u16 − 32768`. accel_scale = `32768/acc_range` → g; gyro_scale = `32768/gyro_range` → deg/s. Defaults acc_range=32 g, gyro_range=2000 deg/s (read protobuf metadata id=1 tag 65 when present; do NOT require it). `read_imu` returns SI: accel m/s² (×9.80665), gyro rad/s (×π/180).
+> - Validated on real file: 1000 Hz, |accel| mean 1.007 g, gyro median 1.29 deg/s spiking to 32 on turns.
+>
+> The synthetic-trailer fixture (Step 1) and parser (Step 3) below must BOTH be rewritten to this offsets-index + 20-byte-raw layout so the roundtrip stays self-consistent. The implementer dispatch carries the full authoritative spec + spike source.
+
 **Files:**
 - Modify: `src/dcwb/insta360.py`
 - Modify: `tests/fixtures/make_insta360.py`
