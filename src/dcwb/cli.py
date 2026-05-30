@@ -108,6 +108,9 @@ def _build_parser() -> argparse.ArgumentParser:
     py.add_argument("--insta-roll", type=float, default=180.0)
     py.add_argument("--insta-hfov", type=float, default=110.0)
     py.add_argument("--insta-vfov", type=float, default=70.0)
+    py.add_argument("--start-offset", type=float, default=0.0,
+                    help="Begin the rendered window this many seconds into the "
+                         "Insta360 recording (skip parked footage at the start)")
 
     return p
 
@@ -312,7 +315,7 @@ def _cmd_highlight_day(args) -> int:
 def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                       encoder, bitrate_kbps, max_duration=None,
                       insta_yaw=180.0, insta_pitch=20.0, insta_roll=180.0,
-                      insta_hfov=110.0, insta_vfov=70.0) -> int:
+                      insta_hfov=110.0, insta_vfov=70.0, start_offset=0.0) -> int:
     """Orchestrate Insta360<->Tesla sync: anchor by creation_time, refine by
     cross-correlating Tesla yaw-rate against an auto-selected Insta360 gyro axis,
     then render a side-by-side combined.mp4 with a telemetry overlay + manifest."""
@@ -436,19 +439,34 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     res = S.SyncResult(delta_s=tesla_lead, confidence=float(peak),
                        signal="gps_yaw|gyro", anchor_guess=anchor_tesla_lead)
 
-    # --- render window (capped by max_duration) ---
+    # --- render window: [start_offset, start_offset+cap] in INSTA video time ---
     out_dir = out_root / "sync" / recent
     out_dir.mkdir(parents=True, exist_ok=True)
     enc = encoder
     cap = max_duration if max_duration else min(insv_total, 600.0)
+    start_offset = max(0.0, float(start_offset))
 
-    # Tesla concat: enough clips to cover [0, anchor_tesla_lead + cap], since
-    # Tesla leads and we trim it by ~tesla_lead before showing the cap window.
+    # Alignment. At display-local time L, both panels show epoch time
+    # (start_offset + L). Insta-flat local 0 = epoch start_offset; Tesla concat
+    # local 0 = epoch tesla0 (= -anchor_tesla_lead). So the Tesla (right) input is
+    # trimmed by (start_offset + tesla_lead); the Insta (left) input by 0.
+    right_start = start_offset + tesla_lead
+    left_start = 0.0
+    if right_start < 0:                 # only if Tesla actually trails Insta
+        left_start = -right_start
+        right_start = 0.0
+    print(f"[sync] start_offset={start_offset:.1f}s left_start={left_start:.3f} "
+          f"right_start={right_start:.3f}", file=sys.stderr)
+    # The player seeks tesla.currentTime = insta.currentTime + delta, so the
+    # manifest delta is the Tesla trim (right_start), not the raw tesla_lead.
+    res.delta_s = right_start
+
+    # Tesla concat: enough clips to cover [0, right_start + cap].
     tesla_cat = out_dir / "tesla-concat.mp4"
-    n_clips = min(len(fronts), max(1, int((anchor_tesla_lead + cap) // 60) + 2))
+    n_clips = min(len(fronts), max(1, int((right_start + cap) // 60) + 2))
     concat_clips(fronts[:n_clips], tesla_cat, encoder=enc, bitrate_kbps=bitrate_kbps)
 
-    # Insta display: provided flat export, else v360 reframe of the capped window.
+    # Insta display: provided flat export, else v360 reframe of the window.
     if insta_flat:
         display = Path(insta_flat)
     else:
@@ -457,13 +475,10 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
                      roll=insta_roll, h_fov=insta_hfov, v_fov=insta_vfov,
                      out_w=1280, out_h=720,
                      encoder=enc, bitrate_kbps=bitrate_kbps,
-                     start=0.0, duration=cap)
+                     start=start_offset, duration=cap)
 
-    # Telemetry rows (~1 Hz over the cap), aligned to the displayed window. The
-    # Tesla panel shows footage starting at epoch ~tesla_lead (= anchor_tesla_lead
-    # when method=='anchor'), so sample speed/steer/gear over [tesla_lead, +cap]
-    # but label rows with local display time 0..cap.
-    # Resample speed and steer onto the same gt grid used for GPS/yaw above.
+    # Telemetry (~1 Hz): at display-local L, show Tesla state at epoch
+    # (start_offset + L). gt is epoch-relative, so local = gt[k] - start_offset.
     _, speed_u = S.resample_uniform(t_abs, speed, rate)
     _, steer_u = S.resample_uniform(t_abs, steer, rate)
     # Gear is categorical — map each gt grid point to the nearest real sample.
@@ -471,7 +486,7 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
     rows = []
     step = max(1, int(rate))
     for k in range(0, len(gt), step):
-        local = gt[k] - tesla_lead
+        local = gt[k] - start_offset
         if local < 0:
             continue
         if local > cap:
@@ -479,15 +494,6 @@ def run_sync_insta360(*, insv, recent, insta_flat, source, out_root,
         rows.append((float(local), float(speed_u[k]), float(steer_u[k]), str(gear[gear_idx[k]])))
     ass = out_dir / "telemetry.ass"
     ass.write_text(S.telemetry_ass(rows, play_w=2560, play_h=720))
-
-    # Alignment trims. left = insta display, right = tesla concat. Tesla leads by
-    # tesla_lead seconds, so trim the tesla (right) input to drop its head; the
-    # insta (left) starts at 0. (If tesla_lead were negative, trim insta instead.)
-    if tesla_lead >= 0:
-        right_start = tesla_lead; left_start = 0.0
-    else:
-        left_start = -tesla_lead; right_start = 0.0
-    print(f"[sync] left_start={left_start:.3f} right_start={right_start:.3f}", file=sys.stderr)
 
     combined = out_dir / f"combined-{recent}.mp4"
     render_sidebyside(display, tesla_cat, combined,
@@ -511,7 +517,7 @@ def _cmd_sync_insta360(args) -> int:
         max_duration=args.max_duration,
         insta_yaw=args.insta_yaw, insta_pitch=args.insta_pitch,
         insta_roll=args.insta_roll, insta_hfov=args.insta_hfov,
-        insta_vfov=args.insta_vfov)
+        insta_vfov=args.insta_vfov, start_offset=args.start_offset)
 
 
 def main(argv: list[str] | None = None) -> int:
